@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Bot runtime data
+kalshi_bot/storage/logs/
+kalshi_bot/storage/models/
+kalshi_bot/storage/trades.jsonl
+
+# Old files (not part of this project)
+bot.py
+15m_bot_runner.py
+redis_control.py
+patch_gamma_markets.py
+patch_market_orders.py
+test.py
+view_paper_trades.py
+core/
+data_sources/
+execution/
+feedback/
+monitoring/
+grafana/
+requirements.txt.bak
+
+# Old requirements (renamed to requirements.txt)
+requirements_kalshi.txt
+
+# Misc
+*.log
+*.pkl

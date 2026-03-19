@@ -1,0 +1,27 @@
+# KalshiBTCPredictionModel15 dependencies
+# Install: pip install -r requirements.txt
+
+# HTTP / networking
+httpx>=0.27.0
+websockets>=12.0
+requests>=2.31.0
+
+# Crypto / auth
+cryptography>=42.0
+
+# ML
+xgboost>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Console UI
+rich>=13.7.0
+
+# Data
+pandas>=2.1.0
