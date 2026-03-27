@@ -223,11 +223,24 @@ class TradingEngine:
             )
             order = order_resp.get("order", {})
             order_id = order.get("order_id", "unknown")
-            filled = order.get("count_filled", count) or count
+
+            raw_filled = order.get("count_filled")
+            filled = int(raw_filled) if raw_filled is not None else 0
+
+            if filled == 0:
+                self._log_activity(
+                    f"Order placed but 0 contracts filled (requested {count})"
+                )
+                result["action"] = "no_fill"
+                result["reason"] = "0 contracts filled"
+                return result
+
+            actual_cost = round(filled * (price_cents / 100.0), 2)
+            actual_fees = round(fee_cents * filled, 2)
 
             self._log_activity(
                 f"FILLED: {filled}x {side.upper()} @ {price_cents}c "
-                f"(${bet_dollars:.2f}, fee ~{total_fees:.0f}c)"
+                f"(${actual_cost:.2f}, fee ~{actual_fees:.0f}c)"
             )
 
             self.current_position = {
@@ -235,7 +248,7 @@ class TradingEngine:
                 "direction": direction,
                 "entry_price": price_cents,
                 "count": filled,
-                "bet_dollars": bet_dollars,
+                "bet_dollars": actual_cost,
                 "order_id": order_id,
                 "entry_time": time.time(),
             }
@@ -247,8 +260,8 @@ class TradingEngine:
                 "count": filled,
                 "price_cents": price_cents,
                 "order_id": order_id,
-                "bet_dollars": bet_dollars,
-                "fees_cents": total_fees,
+                "bet_dollars": actual_cost,
+                "fees_cents": actual_fees,
             })
 
         except Exception as e:
@@ -267,12 +280,12 @@ class TradingEngine:
             prob_up=0.5,
             confidence=0.0,
             direction=direction,
-            bet_dollars=bet_dollars,
+            bet_dollars=actual_cost,
             yes_price=price_cents / 100.0,
             order_id=order_id,
             fill_price_cents=price_cents,
             fill_count=filled,
-            fees_cents=total_fees,
+            fees_cents=actual_fees,
             side=side,
             entry_type="entry",
         )

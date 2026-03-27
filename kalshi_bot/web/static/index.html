@@ -246,6 +246,8 @@ td.pending{color:var(--yellow)}
 
 <script>
 let ws=null, btcChart=null, pnlChart=null, botRunning=false;
+let _lastState=null;
+let _posEntryTime=null, _posSettleEnd=null;
 
 const C={
   line:'#555',lineFill:'#55555508',
@@ -258,17 +260,62 @@ function initCharts(){
   const base={
     responsive:true,maintainAspectRatio:false,
     animation:{duration:200},
-    plugins:{legend:{display:false}},
+    plugins:{legend:{display:false},tooltip:{enabled:false}},
     scales:{
       x:{grid:{color:C.grid,drawBorder:false},ticks:{color:C.tick,font:{family:"'JetBrains Mono'",size:9},maxTicksLimit:8}},
       y:{grid:{color:C.grid,drawBorder:false},ticks:{color:C.tick,font:{family:"'JetBrains Mono'",size:9}},position:'right'},
     },
   };
+
+  const crosshairPlugin={
+    id:'crosshair',
+    afterEvent(chart,args){
+      const e=args.event;
+      if(e.type==='mousemove'&&e.x!==undefined){
+        chart._crossX=e.x; chart._crossY=e.y; chart._showCross=true;
+      }else if(e.type==='mouseout'){chart._showCross=false;}
+    },
+    afterDraw(chart){
+      if(!chart._showCross||!chart._crossX)return;
+      const{ctx,chartArea:{left,right,top,bottom},scales:{x:xScale,y:yScale}}=chart;
+      const cx=chart._crossX;
+      if(cx<left||cx>right)return;
+      const val=yScale.getValueForPixel(chart._crossY);
+      ctx.save();
+      ctx.setLineDash([3,3]);
+      ctx.strokeStyle='#444';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(cx,top);ctx.lineTo(cx,bottom);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(left,chart._crossY);ctx.lineTo(right,chart._crossY);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#0c0c0e';ctx.strokeStyle='#444';
+      const label='$'+val.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+      const tw=ctx.measureText(label).width+10;
+      ctx.fillRect(right+2,chart._crossY-10,tw,20);
+      ctx.strokeRect(right+2,chart._crossY-10,tw,20);
+      ctx.fillStyle='#e0e0e0';ctx.font="10px 'JetBrains Mono'";ctx.textAlign='left';ctx.textBaseline='middle';
+      ctx.fillText(label,right+7,chart._crossY);
+      ctx.restore();
+    }
+  };
+
   btcChart=new Chart(document.getElementById('btcChart'),{
     type:'line',
     data:{labels:[],datasets:[{data:[],borderColor:C.line,backgroundColor:C.lineFill,borderWidth:1.2,pointRadius:0,fill:true,tension:.3}]},
-    options:{...base,scales:{...base.scales,x:{...base.scales.x,type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'}}}}},
+    options:{...base,
+      interaction:{mode:'index',intersect:false},
+      plugins:{...base.plugins,tooltip:{
+        enabled:true,mode:'index',intersect:false,
+        backgroundColor:'#0c0c0e',borderColor:'#2a2a2f',borderWidth:1,
+        titleColor:'#8a8a90',bodyColor:'#e0e0e0',
+        titleFont:{family:"'JetBrains Mono'",size:10},bodyFont:{family:"'JetBrains Mono'",size:12},
+        displayColors:false,padding:8,
+        callbacks:{label:function(ctx){return '$'+ctx.parsed.y.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}}
+      }},
+      scales:{...base.scales,x:{...base.scales.x,type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'}}}}
+    },
+    plugins:[crosshairPlugin],
   });
+
   pnlChart=new Chart(document.getElementById('pnlChart'),{
     type:'line',
     data:{labels:[],datasets:[{data:[],borderColor:C.green,backgroundColor:C.greenFill,borderWidth:1.5,pointRadius:0,fill:true,tension:.2}]},
@@ -288,6 +335,7 @@ async function fetchBtcPrices(){
 }
 
 function updateUI(state){
+  _lastState=state;
   botRunning=state.running;
   const btn=document.getElementById('btnStart');
   const ind=document.getElementById('statusIndicator');
@@ -336,22 +384,15 @@ function updateUI(state){
     pnlChart.update('none');
   }
 
-  const pp=document.getElementById('positionPanel');
   document.getElementById('marketTicker').textContent=state.market_ticker||'';
   const pos=state.position;
   if(pos){
-    const sc=pos.side==='yes'?'c-yes':'c-no';
-    const hm=Math.floor((pos.hold_seconds||0)/60),hs=Math.floor((pos.hold_seconds||0)%60);
-    const cm=Math.floor((state.seconds_to_close||0)/60),cs=Math.floor((state.seconds_to_close||0)%60);
-    pp.innerHTML=`<div class="pos-grid">
-      <div class="pos-item"><div class="label">Side</div><div class="value ${sc}">${pos.side.toUpperCase()} (${pos.direction.toUpperCase()})</div></div>
-      <div class="pos-item"><div class="label">Entry</div><div class="value">${pos.entry_price}c</div></div>
-      <div class="pos-item"><div class="label">Contracts</div><div class="value">${pos.count}</div></div>
-      <div class="pos-item"><div class="label">Bet</div><div class="value">$${(pos.bet_dollars||0).toFixed(2)}</div></div>
-      <div class="pos-item"><div class="label">Holding</div><div class="value">${hm}m ${hs}s</div></div>
-      <div class="pos-item"><div class="label">Settles</div><div class="value" style="color:var(--yellow)">${cm}m ${String(cs).padStart(2,'0')}s</div></div>
-    </div>`;
-  }else{pp.innerHTML='<div class="pos-empty">No active position</div>';}
+    _posEntryTime=Date.now()/1000-(pos.hold_seconds||0);
+    _posSettleEnd=Date.now()/1000+(state.seconds_to_close||0);
+  }else{
+    _posEntryTime=null;_posSettleEnd=null;
+  }
+  renderPosition(pos,state.seconds_to_close);
 
   const strat=state.last_cycle||{};
   const sp=document.getElementById('strategyPanel');
@@ -396,9 +437,33 @@ function updateUI(state){
       else if(t.outcome===false){rc='loss';rt='LOSS';}
       const p=t.pnl_dollars!=null?(t.pnl_dollars>=0?'+':'')+t.pnl_dollars.toFixed(2):'--';
       const pc=t.pnl_dollars!=null?(t.pnl_dollars>=0?'win':'loss'):'';
-      return `<tr><td>${ts}</td><td>${market}</td><td class="${sc}">${(t.side||'').toUpperCase()}</td><td>${t.fill_price_cents||0}c</td><td>$${(t.bet_dollars||0).toFixed(0)}</td><td class="${rc}">${rt}</td><td class="${pc}">${p}</td></tr>`;
+      return `<tr><td>${ts}</td><td>${market}</td><td class="${sc}">${(t.side||'').toUpperCase()}</td><td>${t.fill_price_cents||0}c</td><td>$${(t.bet_dollars||0).toFixed(2)}</td><td class="${rc}">${rt}</td><td class="${pc}">${p}</td></tr>`;
     }).join('');
   }
+}
+
+function renderPosition(pos,serverClose){
+  const pp=document.getElementById('positionPanel');
+  if(!pos){pp.innerHTML='<div class="pos-empty">No active position</div>';return;}
+  const sc=pos.side==='yes'?'c-yes':'c-no';
+  const now=Date.now()/1000;
+  const holdSec=_posEntryTime?Math.max(0,now-_posEntryTime):0;
+  const closeSec=_posSettleEnd?Math.max(0,_posSettleEnd-now):0;
+  const hm=Math.floor(holdSec/60),hs=Math.floor(holdSec%60);
+  const cm=Math.floor(closeSec/60),cs=Math.floor(closeSec%60);
+  pp.innerHTML=`<div class="pos-grid">
+    <div class="pos-item"><div class="label">Side</div><div class="value ${sc}">${pos.side.toUpperCase()} (${pos.direction.toUpperCase()})</div></div>
+    <div class="pos-item"><div class="label">Entry</div><div class="value">${pos.entry_price}c</div></div>
+    <div class="pos-item"><div class="label">Contracts</div><div class="value">${pos.count}</div></div>
+    <div class="pos-item"><div class="label">Bet</div><div class="value">$${(pos.bet_dollars||0).toFixed(2)}</div></div>
+    <div class="pos-item"><div class="label">Holding</div><div class="value">${hm}m ${String(hs).padStart(2,'0')}s</div></div>
+    <div class="pos-item"><div class="label">Settles</div><div class="value" style="color:var(--yellow)">${cm}m ${String(cs).padStart(2,'0')}s</div></div>
+  </div>`;
+}
+
+function tickTimers(){
+  if(!_lastState||!_lastState.position)return;
+  renderPosition(_lastState.position);
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
@@ -446,7 +511,8 @@ async function saveSettings(){
 
 document.addEventListener('DOMContentLoaded',()=>{
   initCharts();fetchBtcPrices();connectWS();
-  setInterval(fetchBtcPrices,60000);
+  setInterval(fetchBtcPrices,15000);
+  setInterval(tickTimers,1000);
   setInterval(async()=>{
     try{
       const[stats,status,trades,logs]=await Promise.all([fetch('/api/stats').then(r=>r.json()),fetch('/api/status').then(r=>r.json()),fetch('/api/trades').then(r=>r.json()),fetch('/api/activity').then(r=>r.json())]);
