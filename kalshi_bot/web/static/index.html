@@ -11,13 +11,13 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
-  --bg-0:#000000;--bg-1:#08080a;--bg-2:#101012;--bg-3:#18181b;
-  --border:#1f1f23;--border-hover:#2a2a2f;
-  --text:#d1d1d1;--text-dim:#5c5c60;--text-muted:#3a3a3e;
-  --accent:#909094;
+  --bg-0:#000000;--bg-1:#0c0c0e;--bg-2:#151517;--bg-3:#1e1e21;
+  --border:#2a2a2f;--border-hover:#38383f;
+  --text:#e0e0e0;--text-dim:#8a8a90;--text-muted:#606068;
+  --accent:#a0a0a6;
   --green:#5c9470;--green-bright:#6fad83;
   --red:#94525c;--red-bright:#ad6f7a;
-  --yellow:#94905c;
+  --yellow:#a8a46a;
   --font:'Inter',system-ui,sans-serif;
   --mono:'JetBrains Mono',monospace;
 }
@@ -86,7 +86,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-0);color:var(-
 
 /* ── log ── */
 .log-scroll{max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.8}
-.log-line{padding:1px 0;border-bottom:1px solid #0f0f0f}
+.log-line{padding:1px 0;border-bottom:1px solid #1a1a1e}
 .log-line.win{color:var(--green-bright)}
 .log-line.loss{color:var(--red-bright)}
 .log-line.fill{color:var(--yellow)}
@@ -95,7 +95,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-0);color:var(-
 /* ── table ── */
 .trade-table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
 .trade-table th{text-align:left;padding:7px 10px;font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);border-bottom:1px solid var(--border);font-weight:600}
-.trade-table td{padding:6px 10px;border-bottom:1px solid #0f0f0f;color:var(--text-dim)}
+.trade-table td{padding:6px 10px;border-bottom:1px solid #1a1a1e;color:var(--text-dim)}
 .trade-table tr:hover td{background:var(--bg-2);color:var(--text)}
 td.win{color:var(--green-bright)}
 td.loss{color:var(--red-bright)}
@@ -250,7 +250,7 @@ const C={
   line:'#555',lineFill:'#55555508',
   green:'#5c9470',greenFill:'#5c947008',
   red:'#94525c',redFill:'#94525c08',
-  grid:'#141416',tick:'#3a3a3e',
+  grid:'#1e1e22',tick:'#606068',
 };
 
 function initCharts(){
