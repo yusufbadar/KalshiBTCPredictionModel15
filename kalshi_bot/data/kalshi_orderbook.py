@@ -83,6 +83,101 @@ def sweep_no_buy_limit(yes_bids: list, want: int) -> tuple[int, int] | None:
     return lim, got
 
 
+def _size_yes_buy_for_budget(no_bids: list, budget: float) -> tuple[int, int] | None:
+    """Max YES contracts spend ≤ ``budget`` (walk book at implied YES ask dollars).
+
+    Returns ``(count, limit_cents)`` for FOK, or ``None``.
+    """
+    if budget < 0.01 or not no_bids:
+        return None
+    remaining = float(budget)
+    got = 0
+    worst_cents = 0
+    for i in range(len(no_bids) - 1, -1, -1):
+        row = no_bids[i]
+        nb = float(row[0])
+        qty = int(float(row[1]))
+        if qty < 1:
+            continue
+        price_d = 1.0 - nb
+        if price_d <= 0:
+            continue
+        yac = _implied_yes_ask_cents(nb)
+        can_afford = int(remaining / price_d + 1e-12)
+        take = min(qty, can_afford)
+        if take < 1:
+            continue
+        got += take
+        worst_cents = max(worst_cents, yac)
+        remaining -= take * price_d
+    if got < 1:
+        return None
+    lim = min(99, worst_cents + 1)
+    cap = int(budget / (lim / 100.0))
+    if cap < 1:
+        return None
+    got = min(got, cap)
+    sw = sweep_yes_buy_limit(no_bids, got)
+    if not sw:
+        return None
+    lim_f, book_cap = sw
+    got = min(got, book_cap)
+    cap2 = int(budget / (lim_f / 100.0))
+    got = min(got, cap2)
+    if got < 1:
+        return None
+    sw2 = sweep_yes_buy_limit(no_bids, got)
+    if not sw2:
+        return None
+    return sw2[1], sw2[0]
+
+
+def _size_no_buy_for_budget(yes_bids: list, budget: float) -> tuple[int, int] | None:
+    """Max NO contracts spend ≤ ``budget`` (walk book at implied NO ask dollars)."""
+    if budget < 0.01 or not yes_bids:
+        return None
+    remaining = float(budget)
+    got = 0
+    worst_cents = 0
+    for i in range(len(yes_bids) - 1, -1, -1):
+        row = yes_bids[i]
+        yb = float(row[0])
+        qty = int(float(row[1]))
+        if qty < 1:
+            continue
+        price_d = 1.0 - yb
+        if price_d <= 0:
+            continue
+        nac = _implied_no_ask_cents(yb)
+        can_afford = int(remaining / price_d + 1e-12)
+        take = min(qty, can_afford)
+        if take < 1:
+            continue
+        got += take
+        worst_cents = max(worst_cents, nac)
+        remaining -= take * price_d
+    if got < 1:
+        return None
+    lim = min(99, worst_cents + 1)
+    cap = int(budget / (lim / 100.0))
+    if cap < 1:
+        return None
+    got = min(got, cap)
+    sw = sweep_no_buy_limit(yes_bids, got)
+    if not sw:
+        return None
+    lim_f, book_cap = sw
+    got = min(got, book_cap)
+    cap2 = int(budget / (lim_f / 100.0))
+    got = min(got, cap2)
+    if got < 1:
+        return None
+    sw2 = sweep_no_buy_limit(yes_bids, got)
+    if not sw2:
+        return None
+    return sw2[1], sw2[0]
+
+
 class KalshiOrderbookFeed:
     def __init__(self, client: KalshiClient):
         self.client = client
@@ -155,4 +250,28 @@ class KalshiOrderbookFeed:
             return sweep_no_buy_limit(yes_bids, want)
         except Exception as e:
             logger.warning("Kalshi sweep_buy failed for {} {}: {}", ticker, side, e)
+            return None
+
+    def size_buy_for_budget(
+        self, ticker: str, side: str, budget_dollars: float
+    ) -> Optional[tuple[int, int]]:
+        """Contracts and FOK limit to spend up to ``budget_dollars`` at book prices.
+
+        Returns ``(count, limit_cents)`` or ``None`` if the book cannot support
+        at least one contract within budget.
+        """
+        if budget_dollars < 0.01:
+            return None
+        try:
+            raw = self.client.get_market_orderbook(ticker)
+            ob = raw.get("orderbook_fp") or raw.get("orderbook", {})
+            yes_bids = ob.get("yes_dollars", ob.get("yes", []))
+            no_bids = ob.get("no_dollars", ob.get("no", []))
+            if side == "yes":
+                return _size_yes_buy_for_budget(no_bids, budget_dollars)
+            return _size_no_buy_for_budget(yes_bids, budget_dollars)
+        except Exception as e:
+            logger.warning(
+                "Kalshi size_buy_for_budget failed for {} {}: {}", ticker, side, e
+            )
             return None

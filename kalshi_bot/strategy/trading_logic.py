@@ -393,16 +393,7 @@ class TradingEngine:
             "chosen_side": side,
         })
 
-        # ── 5. Get Kalshi prices ────────────────────────────────────
-        ob = self.kalshi_ob.fetch(market.ticker) or {}
-        if side == "yes":
-            ask_price = ob.get("best_yes_ask", 0.55)
-        else:
-            ask_price = ob.get("best_no_ask", 0.55)
-
-        price_cents = max(1, min(99, int(round(ask_price * 100))))
-
-        # ── 6. Size the bet ─────────────────────────────────────────
+        # ── 5–6. Size from balance % (orderbook fetched in size_buy_for_budget) ──
         balance = self.client.get_balance_dollars()
         risk_decision = self.risk.check(balance, 2.0)
         if not risk_decision.allowed:
@@ -412,38 +403,32 @@ class TradingEngine:
             return result
 
         bet_dollars = risk_decision.bet_dollars
-        cost_per = price_cents / 100.0
-        count_target = max(1, int(bet_dollars / cost_per))
+        pct = TRADING.bet_fraction * 100.0
 
-        swept = self.kalshi_ob.sweep_buy(market.ticker, side, count_target)
-        if not swept:
+        sized = self.kalshi_ob.size_buy_for_budget(
+            market.ticker, side, bet_dollars
+        )
+        if not sized:
             result["action"] = "skip"
-            result["reason"] = "no orderbook liquidity for immediate fill"
-            self._log_activity("FOK skip: empty or insufficient book for sweep")
+            result["reason"] = "no orderbook liquidity within risk budget"
+            self._log_activity(
+                "FOK skip: cannot place at least 1 contract within book + budget"
+            )
             self.last_cycle = result
             return result
 
-        limit_cents, book_cap = swept
-        max_by_risk = int(bet_dollars / (limit_cents / 100.0))
-        if max_by_risk < 1:
-            result["action"] = "skip"
-            result["reason"] = "bet too small at swept limit price"
-            self.last_cycle = result
-            return result
-
-        count = min(book_cap, max_by_risk)
+        count, price_cents = sized
         if count < 1:
             result["action"] = "skip"
-            result["reason"] = "no contracts after risk cap"
+            result["reason"] = "no contracts after book sizing"
             self.last_cycle = result
             return result
 
-        if count < count_target:
-            self._log_activity(
-                f"FOK size {count} (book/risk cap; requested ~{count_target})"
-            )
-
-        price_cents = limit_cents
+        notion_est = round(count * (price_cents / 100.0), 2)
+        self._log_activity(
+            f"Risk {pct:.1f}% → ${bet_dollars:.2f} / ${balance:.2f} balance "
+            f"→ {count}x {side.upper()} FOK ≤{price_cents}c (~${notion_est} max notional)"
+        )
 
         # ── 7. Place FOK at swept limit (full size or no trade) ────
         order_resp = None

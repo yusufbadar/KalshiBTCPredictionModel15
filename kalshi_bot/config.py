@@ -9,6 +9,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_bet_fraction() -> float:
+    raw = os.getenv("BET_FRACTION", "0.09").strip() or "0.09"
+    try:
+        v = float(raw)
+    except ValueError:
+        return 0.09
+    return min(1.0, max(0.0, v))
+
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "storage"
 MODEL_DIR = DATA_DIR / "models"
@@ -53,7 +63,10 @@ def get_kalshi_ws_url() -> str:
 # ---------------------------------------------------------------------------
 @dataclass
 class TradingConfig:
-    bet_fraction: float = 0.09               # bet 9% of balance each trade
+    # Fraction of API balance to deploy per entry (default 9%). Override with BET_FRACTION env.
+    bet_fraction: float = field(
+        default_factory=lambda: _env_bet_fraction(),
+    )
     bankroll_floor: float = 5.0
     max_open_positions: int = 1
 

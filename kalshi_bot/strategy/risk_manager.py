@@ -1,7 +1,8 @@
 """
 Risk manager — percentage-of-balance sizing.
 
-Bets a fixed fraction (default 9%) of the current balance each trade.
+Bets ``TRADING.bet_fraction`` of the Kalshi API cash balance each trade
+(default 9%; override with env ``BET_FRACTION``, e.g. ``0.09``).
 """
 from __future__ import annotations
 
