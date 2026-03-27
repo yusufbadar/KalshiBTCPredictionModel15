@@ -1,38 +1,44 @@
 """
-XGBoost-based BTC 15-minute direction predictor.
+Probability model for BTC 15-minute direction prediction.
 
-Provides:
-  - ``train(X, y)``  – train or retrain the model
-  - ``predict(X)``   – return (probability_up, confidence)
-  - ``save / load``  – persist to disk
+Default: logistic regression (stable probabilities, easy calibration).
+Optional: small XGBoost (max_depth=2) — only use if it beats logistic
+on out-of-sample EV after fees.
+
+All features are standardised internally via StandardScaler.
 """
 from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 from loguru import logger
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+
+from kalshi_bot.config import ML, MODEL_DIR
 
 try:
     import xgboost as xgb
 except ImportError:
     xgb = None
-    logger.warning("xgboost not installed – ML predictor will use fallback")
-
-from kalshi_bot.config import ML, MODEL_DIR
 
 
 class Predictor:
-    """XGBoost binary classifier: 1 = BTC goes UP in next 15 min, 0 = DOWN."""
+    """Binary classifier: 1 = BTC goes UP in next 15 min, 0 = DOWN."""
 
-    def __init__(self):
-        self.model: Optional[xgb.XGBClassifier] = None
-        self.is_trained = False
+    def __init__(self, model_type: str | None = None):
+        self.model_type = model_type or ML.model_type
+        self.model = None
+        self.scaler: StandardScaler = StandardScaler()
+        self.is_trained: bool = False
         self.feature_names: list[str] = []
         self.train_accuracy: float = 0.0
         self.n_train_samples: int = 0
+
+    # ── training ────────────────────────────────────────────────────
 
     def train(
         self,
@@ -41,34 +47,41 @@ class Predictor:
         feature_names: list[str] | None = None,
         eval_fraction: float = 0.15,
     ) -> dict:
-        """Train the model from scratch.
-
-        Returns dict with metrics (accuracy, logloss, n_samples).
-        """
-        if xgb is None:
-            logger.error("Cannot train: xgboost not installed")
-            return {"error": "xgboost not installed"}
-
         n = len(X)
         if n < ML.min_training_samples:
-            logger.warning("Not enough samples ({} < {})", n, ML.min_training_samples)
             return {"error": f"need {ML.min_training_samples} samples, got {n}"}
+
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
         split = int(n * (1 - eval_fraction))
         X_train, X_val = X[:split], X[split:]
         y_train, y_val = y[:split], y[split:]
 
-        self.model = xgb.XGBClassifier(**ML.xgb_params)
-        self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False,
-        )
+        self.scaler = StandardScaler()
+        X_train_s = self.scaler.fit_transform(X_train)
+        X_val_s = self.scaler.transform(X_val)
 
-        train_pred = self.model.predict(X_train)
-        val_pred = self.model.predict(X_val)
+        if self.model_type == "xgboost" and xgb is not None:
+            self.model = xgb.XGBClassifier(**ML.xgb_params)
+            self.model.fit(
+                X_train_s, y_train,
+                eval_set=[(X_val_s, y_val)],
+                verbose=False,
+            )
+        else:
+            self.model = LogisticRegression(
+                C=1.0, max_iter=1000, solver="lbfgs",
+            )
+            self.model.fit(X_train_s, y_train)
+
+        train_pred = self.model.predict(X_train_s)
+        val_pred = self.model.predict(X_val_s)
         train_acc = float(np.mean(train_pred == y_train))
         val_acc = float(np.mean(val_pred == y_val))
+
+        val_proba = self.model.predict_proba(X_val_s)
+        prob_up_val = val_proba[:, 1] if val_proba.shape[1] > 1 else val_proba[:, 0]
+        brier = float(np.mean((prob_up_val - y_val) ** 2))
 
         self.is_trained = True
         self.train_accuracy = val_acc
@@ -81,47 +94,54 @@ class Predictor:
             "train_acc": round(train_acc, 4),
             "val_acc": round(val_acc, 4),
             "val_size": len(y_val),
+            "brier_score": round(brier, 4),
+            "model_type": self.model_type,
         }
         logger.info("Model trained: {}", metrics)
         return metrics
 
-    def predict(self, X: np.ndarray) -> Tuple[float, float]:
-        """Return (prob_up, confidence) for a single sample.
+    # ── inference ───────────────────────────────────────────────────
 
-        *prob_up*: probability BTC goes up (0.0 – 1.0)
-        *confidence*: distance from 0.5 scaled to 0–1 (higher = more certain)
-
-        Falls back to 0.5 / 0.0 if model is not trained.
-        """
+    def predict(self, X: np.ndarray) -> float:
+        """Return P(UP) for a single feature vector (scalar float)."""
         if not self.is_trained or self.model is None:
-            return 0.5, 0.0
+            return 0.5
 
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         if X.ndim == 1:
             X = X.reshape(1, -1)
 
-        proba = self.model.predict_proba(X)[0]
-        prob_up = float(proba[1]) if len(proba) > 1 else float(proba[0])
-        confidence = abs(prob_up - 0.5) * 2.0  # 0..1
-        return prob_up, confidence
+        X_s = self.scaler.transform(X)
+        proba = self.model.predict_proba(X_s)[0]
+        return float(proba[1]) if len(proba) > 1 else float(proba[0])
+
+    # ── diagnostics ─────────────────────────────────────────────────
 
     def feature_importance(self) -> dict[str, float]:
-        """Return feature importances keyed by name."""
         if not self.is_trained or self.model is None:
             return {}
-        importances = self.model.feature_importances_
-        names = self.feature_names or [f"f{i}" for i in range(len(importances))]
-        return dict(sorted(zip(names, map(float, importances)), key=lambda x: -x[1]))
+        if isinstance(self.model, LogisticRegression):
+            coefs = np.abs(self.model.coef_[0])
+            names = self.feature_names or [f"f{i}" for i in range(len(coefs))]
+            return dict(sorted(zip(names, map(float, coefs)), key=lambda x: -x[1]))
+        if hasattr(self.model, "feature_importances_"):
+            importances = self.model.feature_importances_
+            names = self.feature_names or [f"f{i}" for i in range(len(importances))]
+            return dict(sorted(zip(names, map(float, importances)), key=lambda x: -x[1]))
+        return {}
 
-    # ── persistence ───────────────────────────────────────────────
+    # ── persistence ─────────────────────────────────────────────────
 
     def save(self, tag: str = "latest") -> Path:
         path = MODEL_DIR / f"predictor_{tag}.pkl"
         with open(path, "wb") as f:
             pickle.dump({
                 "model": self.model,
+                "scaler": self.scaler,
                 "feature_names": self.feature_names,
                 "train_accuracy": self.train_accuracy,
                 "n_train_samples": self.n_train_samples,
+                "model_type": self.model_type,
             }, f)
         logger.info("Model saved → {}", path)
         return path
@@ -135,9 +155,11 @@ class Predictor:
             with open(path, "rb") as f:
                 data = pickle.load(f)
             self.model = data["model"]
+            self.scaler = data.get("scaler", StandardScaler())
             self.feature_names = data.get("feature_names", [])
             self.train_accuracy = data.get("train_accuracy", 0.0)
             self.n_train_samples = data.get("n_train_samples", 0)
+            self.model_type = data.get("model_type", "logistic")
             self.is_trained = self.model is not None
             logger.info("Model loaded ← {} (acc={:.2%})", path, self.train_accuracy)
             return True

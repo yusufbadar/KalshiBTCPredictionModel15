@@ -6,7 +6,6 @@ features that feed into the ML model.
 """
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Optional
 
 from loguru import logger

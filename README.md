@@ -1,56 +1,42 @@
-# KalshiBTCPredictionModel15
+# BTC-15M Candle Bot
 
-A self-learning AI trading bot that predicts Bitcoin price movements in 15-minute windows on [Kalshi](https://kalshi.com) (KXBTC15M markets).
+A rule-based trading bot for [Kalshi](https://kalshi.com) KXBTC15M markets that predicts whether Bitcoin will close above or below the opening price in each 15-minute window.
 
-The bot uses an XGBoost machine learning model combined with a multi-signal alignment system to decide whether BTC will go up or down in each 15-minute period, then automatically places trades on Kalshi.
+The bot watches two 5-minute candles inside each window, compares them against the 20-period EMA, and places a single trade — then holds to settlement.
 
-## How It Works
+## Strategy
 
-### Dual-Layer Decision System
+The bot waits until 10 minutes into each 15-minute Kalshi window so that two complete 5-minute candles are available, then applies three simple rules:
 
-**Layer 1 – Machine Learning (XGBoost)**
-- Trained on 55 features: price returns, technical indicators (RSI, MACD, Bollinger Bands, EMA crossovers), volatility, orderbook data, sentiment, and temporal patterns.
-- Bootstraps from historical Binance data, then continuously retrains on live outcomes.
+| Condition | Action |
+|-----------|--------|
+| Both candles green + price above 20 EMA | Buy **YES** (predict close above) |
+| Both candles red + price below 20 EMA | Buy **NO** (predict close below) |
+| Mixed candles | Trade the direction of whichever candle has the bigger body |
 
-**Layer 2 – Signal Alignment (5-Point Checklist)**
+After entering, the bot holds the position until the market settles. No scalping, no mid-window exits.
 
-Before every trade, the bot checks five independent signals:
+## Web Dashboard
 
-| Signal | Bullish | Bearish |
-|--------|---------|---------|
-| Price Action | Stalling after a drop | Stalling after a rise |
-| Funding Rate | Shorts overcrowded (bottom 20%) | Longs overcrowded (top 20%) |
-| Liquidations | Longs flushed → selling done | Shorts squeezed → fuel gone |
-| Order Book Walls | Bid wall present, no ask wall | Ask wall present, no bid wall |
-| Breaking News | Bullish headline (ETF, adoption) | Bearish headline (hack, war) |
+The bot includes a dark-themed web dashboard built with FastAPI and vanilla JavaScript.
 
-The bot **only trades when 3+ of 5 signals agree** on direction. When both layers agree, confidence is boosted. When they disagree, the bot either skips or reduces position size.
+- **BTC price chart** — live 5-minute candles from Binance
+- **PnL curve** — cumulative profit/loss over time
+- **Stats** — balance, win rate, total trades, fees, max drawdown
+- **Live position** — current side, entry price, contracts, time to settlement
+- **Strategy panel** — candle colors, EMA position, rule triggered, decision
+- **Trade history** — scrollable table of all trades with outcomes
+- **Engine log** — real-time activity feed
+- **Settings** — switch between demo/live mode, enter API credentials
+- **Reset** — clear all trade history and stats
 
-### Data Sources
+### Running the Dashboard
 
-- **Coinbase** – BTC-USD spot price and 24h stats
-- **Binance** – 1m/5m/15m candles, 24h ticker, order book depth (wall detection), funding rates, long/short ratio
-- **Coinglass** – Aggregated liquidation data
-- **Deribit** – Options put/call ratio
-- **CryptoPanic** – Breaking crypto news headlines
-- **Alternative.me** – Fear & Greed Index
-- **Kalshi** – Market orderbook and pricing
+```bash
+python -m kalshi_bot.web
+```
 
-### Risk Management
-
-- Fixed bet size ($10 default on $100 account)
-- Reduced bet size when balance drops below threshold
-- Hard bankroll floor (stops trading below $20)
-- Daily loss limit ($30)
-- Consecutive loss circuit breaker (pauses after 4 losses in a row)
-- Confidence threshold gate (minimum 60%)
-
-### Self-Learning
-
-- Logs every trade with full feature snapshots
-- Retrains the XGBoost model every 50 trades or 24 hours
-- Keeps versioned model snapshots; rolls back if new model degrades
-- Tracks live performance metrics (win rate, Sharpe ratio, drawdown)
+Open [http://localhost:8000](http://localhost:8000) in your browser. Start and stop the bot from the UI.
 
 ## Setup
 
@@ -67,7 +53,7 @@ pip install -r requirements.txt
 
 ### 2. Configure Environment
 
-Copy the example env file and fill in your Kalshi API credentials:
+Copy the example env file and add your Kalshi credentials:
 
 ```bash
 cp .env.example .env
@@ -82,119 +68,79 @@ KALSHI_MODE=demo
 ```
 
 **Getting API keys:**
-- **Demo:** Go to https://demo.kalshi.co → Account & Security → API Keys
-- **Live:** Go to https://kalshi.com → Account & Security → API Keys
+- **Demo:** [demo.kalshi.co](https://demo.kalshi.co) → Account & Security → API Keys
+- **Live:** [kalshi.com](https://kalshi.com) → Account & Security → API Keys
 
-When generating a key, Kalshi gives you a private key file (`.key`). Save it somewhere safe and point `KALSHI_PRIVATE_KEY_PATH` to it.
+When generating a key, Kalshi provides a private key file (`.key`). Save it somewhere safe and point `KALSHI_PRIVATE_KEY_PATH` to it.
 
 ### 3. (Optional) Discord Alerts
 
-Add a Discord webhook URL to `.env` to receive trade alerts:
+Add a Discord webhook URL to `.env` for trade notifications:
 
 ```env
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your/webhook
 ```
 
-## Running the Bot
+## Running
 
-### Demo Mode (Paper Trading)
-
-Start with demo mode to test without risking real money:
+### Terminal Bot (Demo)
 
 ```bash
 python -m kalshi_bot.main
 ```
 
-On first run, the bot will automatically:
-1. Collect historical BTC data from Binance
-2. Train the initial XGBoost model
-3. Start the 24/7 trading loop
-
-### Live Mode (Real Money)
-
-Once you are confident in the bot's performance on demo, switch to live:
+### Terminal Bot (Live)
 
 ```bash
 python -m kalshi_bot.main --live
 ```
 
-Make sure your `.env` has:
-```env
-KALSHI_MODE=live
-```
-
-And that your Kalshi account is funded and API keys are from the production site (https://kalshi.com).
-
-### Bootstrap Only
-
-To just train/retrain the model without starting the trading loop:
+### Web Dashboard
 
 ```bash
-python -m kalshi_bot.main --bootstrap
+python -m kalshi_bot.web
 ```
 
-### Stopping the Bot
+### Backtesting
 
-Press `Ctrl+C` for a graceful shutdown. The bot will save the current model and close all connections.
+Run the strategy against historical 5-minute candle data:
+
+```bash
+python -m kalshi_bot.backtest --days 30 --spread 0.04
+```
 
 ## Project Structure
 
 ```
 kalshi_bot/
-├── __init__.py
-├── __main__.py              # python -m kalshi_bot.main
-├── main.py                  # Entry point and 24/7 scheduler
+├── main.py                  # Terminal entry point with Rich dashboard
+├── backtest.py              # Walk-forward backtesting engine
 ├── config.py                # All tuneable parameters
 ├── kalshi/
 │   ├── auth.py              # RSA-PSS API authentication
 │   ├── client.py            # Kalshi REST API client
 │   └── market_discovery.py  # KXBTC15M market finder
 ├── data/
-│   ├── data_aggregator.py   # Orchestrates all feeds
-│   ├── coinbase_feed.py     # BTC spot price
-│   ├── binance_feed.py      # Candles, ticker
-│   ├── coinglass_feed.py    # Funding rates + liquidations
-│   ├── exchange_orderbook.py # Bid/ask wall detection
-│   ├── news_feed.py         # Breaking crypto news
-│   ├── fear_greed.py        # Fear & Greed Index
-│   ├── deribit_feed.py      # Options put/call ratio
+│   ├── binance_feed.py      # 5-minute candles and WebSocket feed
 │   └── kalshi_orderbook.py  # Kalshi market orderbook
-├── ml/
-│   ├── feature_engineer.py  # 55-feature pipeline
-│   ├── predictor.py         # XGBoost classifier
-│   ├── model_store.py       # Versioned model storage
-│   └── historical_collector.py
 ├── strategy/
-│   ├── signal_analyzer.py   # 5-point signal checklist
-│   ├── trading_logic.py     # Dual-layer trade decisions
-│   └── risk_manager.py      # Bankroll protection
+│   ├── trading_logic.py     # 5m candle rules + trade execution
+│   └── risk_manager.py      # Position sizing and bankroll protection
 ├── learning/
 │   ├── trade_logger.py      # Trade history (JSONL)
-│   ├── retrainer.py         # Periodic model retraining
-│   └── performance_analyzer.py
+│   └── performance_analyzer.py  # Win rate, Sharpe, drawdown
 ├── monitoring/
-│   ├── dashboard.py         # Rich console dashboard
+│   ├── dashboard.py         # Rich terminal dashboard
 │   └── alerts.py            # Discord webhook alerts
+├── web/
+│   ├── server.py            # FastAPI backend + WebSocket
+│   └── static/
+│       └── index.html       # Single-page dashboard frontend
 └── storage/                 # Auto-created at runtime
-    ├── models/              # Saved model versions
-    ├── logs/                # Bot logs
-    └── trades.jsonl         # Trade history
+    ├── logs/
+    └── trades.jsonl
 ```
-
-## Configuration
-
-All parameters are in `kalshi_bot/config.py`:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `bet_size_dollars` | 10.0 | Standard bet size |
-| `reduced_bet_size_dollars` | 5.0 | Bet size when balance is low |
-| `bankroll_floor` | 20.0 | Stop trading below this balance |
-| `daily_loss_limit` | 30.0 | Max daily loss before pausing |
-| `confidence_threshold` | 0.60 | Minimum model confidence to trade |
-| `consecutive_loss_pause` | 4 | Pause after N consecutive losses |
-| `trade_entry_minutes_before_close` | 2 | Enter position ~2 min before market close |
 
 ## Disclaimer
 
-This software is provided for educational and research purposes. Trading on prediction markets involves real financial risk. Past performance does not guarantee future results. Only trade with money you can afford to lose.
+This software is for educational and research purposes. Trading on prediction markets involves real financial risk. Past performance does not guarantee future results. Only trade with money you can afford to lose.

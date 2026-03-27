@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTC-15M Candle Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg-0:#000000;--bg-1:#08080a;--bg-2:#101012;--bg-3:#18181b;
+  --border:#1f1f23;--border-hover:#2a2a2f;
+  --text:#d1d1d1;--text-dim:#5c5c60;--text-muted:#3a3a3e;
+  --accent:#909094;
+  --green:#5c9470;--green-bright:#6fad83;
+  --red:#94525c;--red-bright:#ad6f7a;
+  --yellow:#94905c;
+  --font:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+html,body{height:100%;font-family:var(--font);background:var(--bg-0);color:var(--text);overflow-x:hidden}
+
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg-0)}
+::-webkit-scrollbar-thumb{background:var(--bg-3);border-radius:3px}
+
+/* ── header ── */
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 28px;background:var(--bg-1);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.header-left{display:flex;align-items:center;gap:14px}
+.logo{font-size:16px;font-weight:700;letter-spacing:-.3px;color:#fff}
+.logo span{color:var(--accent)}
+.mode-badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:3px;text-transform:uppercase;letter-spacing:.8px;border:1px solid var(--border)}
+.mode-badge.demo{color:var(--yellow);border-color:#3a3a2a}
+.mode-badge.live{color:var(--red-bright);border-color:#3a2a2a}
+.header-right{display:flex;align-items:center;gap:8px}
+.btn{padding:6px 14px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:12px;font-weight:500;cursor:pointer;transition:all .12s;font-family:var(--font);letter-spacing:.2px}
+.btn:hover{color:var(--text);border-color:var(--border-hover);background:var(--bg-2)}
+.btn.primary{color:#fff;border-color:#333}
+.btn.primary:hover{background:var(--bg-3);border-color:#444}
+.btn.danger{color:var(--red-bright);border-color:#3a2a2a}
+.btn.danger:hover{background:#1a1012}
+.btn.ghost{border-color:transparent;color:var(--text-muted)}
+.btn.ghost:hover{color:var(--red-bright);border-color:#2a1a1a}
+.status-dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:5px}
+.status-dot.on{background:var(--green-bright);box-shadow:0 0 6px var(--green)}
+.status-dot.off{background:var(--text-muted)}
+.status-text{font-size:12px;color:var(--text-dim)}
+
+/* ── layout ── */
+.container{max-width:1440px;margin:0 auto;padding:16px 20px 40px}
+.grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px}
+.grid-top{display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}
+.grid-mid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.grid-bottom{display:grid;grid-template-columns:5fr 3fr;gap:12px;margin-bottom:12px}
+@media(max-width:900px){.grid-mid,.grid-bottom{grid-template-columns:1fr}}
+
+/* ── card ── */
+.card{background:var(--bg-1);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.card-header{padding:10px 14px 8px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.card-body{padding:12px 14px}
+
+/* ── stat card ── */
+.stat-card{background:var(--bg-1);border:1px solid var(--border);border-radius:6px;padding:12px 14px}
+.stat-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-family:var(--mono);line-height:1.1;color:#fff}
+.stat-sub{font-size:10px;color:var(--text-muted);margin-top:3px;font-family:var(--mono)}
+.stat-value.pos{color:var(--green-bright)}
+.stat-value.neg{color:var(--red-bright)}
+.stat-value.dim{color:var(--text-dim)}
+
+/* ── chart ── */
+.chart-wrap{position:relative;height:300px;padding:4px 0}
+.chart-wrap.small{height:200px}
+
+/* ── position panel ── */
+.pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pos-item{background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:8px 12px}
+.pos-item .label{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:2px}
+.pos-item .value{font-size:14px;font-weight:600;font-family:var(--mono);color:#fff}
+.pos-empty{text-align:center;padding:28px;color:var(--text-muted);font-size:13px}
+.c-yes{color:var(--green-bright)}
+.c-no{color:var(--red-bright)}
+
+/* ── log ── */
+.log-scroll{max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.8}
+.log-line{padding:1px 0;border-bottom:1px solid #0f0f0f}
+.log-line.win{color:var(--green-bright)}
+.log-line.loss{color:var(--red-bright)}
+.log-line.fill{color:var(--yellow)}
+.log-line.signal{color:var(--accent)}
+
+/* ── table ── */
+.trade-table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
+.trade-table th{text-align:left;padding:7px 10px;font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);border-bottom:1px solid var(--border);font-weight:600}
+.trade-table td{padding:6px 10px;border-bottom:1px solid #0f0f0f;color:var(--text-dim)}
+.trade-table tr:hover td{background:var(--bg-2);color:var(--text)}
+td.win{color:var(--green-bright)}
+td.loss{color:var(--red-bright)}
+td.pending{color:var(--yellow)}
+
+/* ── modal ── */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:200;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:var(--bg-1);border:1px solid var(--border);border-radius:8px;width:440px;max-width:95vw;padding:24px 28px}
+.modal h2{font-size:16px;font-weight:700;margin-bottom:18px;color:#fff}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:10px;font-weight:500;color:var(--text-muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.6px}
+.form-group input,.form-group select{width:100%;padding:8px 12px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:var(--mono);outline:none;transition:border-color .12s}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
+
+/* ── strategy ── */
+.strat-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.strat-item{background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:8px 12px;text-align:center}
+.strat-item .label{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:3px}
+.strat-item .value{font-size:13px;font-weight:700;font-family:var(--mono)}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">BTC<span>-15M</span></div>
+    <span class="mode-badge demo" id="modeBadge">DEMO</span>
+    <span class="status-text" id="uptimeText"></span>
+  </div>
+  <div class="header-right">
+    <span class="status-text" id="statusIndicator"><span class="status-dot off"></span>Stopped</span>
+    <button class="btn ghost" onclick="resetStats()" title="Reset all trade history and stats">Reset</button>
+    <button class="btn" onclick="openSettings()">Settings</button>
+    <button class="btn primary" id="btnStart" onclick="startBot()">Start Bot</button>
+  </div>
+</header>
+
+<div class="container">
+
+  <div class="grid-stats">
+    <div class="stat-card">
+      <div class="stat-label">Balance</div>
+      <div class="stat-value" id="statBalance">$0.00</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total PnL</div>
+      <div class="stat-value" id="statPnl">$0.00</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value" id="statWR">--</div>
+      <div class="stat-sub" id="statWRsub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Trades</div>
+      <div class="stat-value" id="statTrades">0</div>
+      <div class="stat-sub" id="statTradesSub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Fees</div>
+      <div class="stat-value dim" id="statFees">$0.00</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Drawdown</div>
+      <div class="stat-value neg" id="statDD">$0.00</div>
+    </div>
+  </div>
+
+  <div class="grid-top">
+    <div class="card">
+      <div class="card-header">
+        <span>BTC / USDT</span>
+        <span id="btcPrice" style="font-family:var(--mono);color:#fff;font-size:13px;font-weight:700"></span>
+      </div>
+      <div class="card-body"><div class="chart-wrap"><canvas id="btcChart"></canvas></div></div>
+    </div>
+  </div>
+
+  <div class="grid-mid">
+    <div class="card">
+      <div class="card-header"><span>PnL Curve</span></div>
+      <div class="card-body"><div class="chart-wrap small"><canvas id="pnlChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span>Position</span>
+        <span id="marketTicker" style="font-family:var(--mono);font-size:10px;color:var(--text-muted)"></span>
+      </div>
+      <div class="card-body" id="positionPanel"><div class="pos-empty">No active position</div></div>
+    </div>
+  </div>
+
+  <div class="grid-top">
+    <div class="card">
+      <div class="card-header"><span>Strategy</span></div>
+      <div class="card-body" id="strategyPanel"><div class="pos-empty">Waiting for first trade...</div></div>
+    </div>
+  </div>
+
+  <div class="grid-bottom">
+    <div class="card">
+      <div class="card-header"><span>Trades</span></div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table class="trade-table">
+          <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Price</th><th>Bet</th><th>Result</th><th>PnL</th></tr></thead>
+          <tbody id="tradeBody"><tr><td colspan="7" style="text-align:center;padding:20px">No trades yet</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span>Log</span></div>
+      <div class="card-body">
+        <div class="log-scroll" id="logScroll">
+          <div class="log-line">Waiting for bot to start...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h2>Settings</h2>
+    <div class="form-group">
+      <label>Mode</label>
+      <select id="settingMode">
+        <option value="demo">Demo (Paper Trading)</option>
+        <option value="live">Live (Real Money)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>API Key ID</label>
+      <input type="text" id="settingApiKey" placeholder="Kalshi API key ID">
+    </div>
+    <div class="form-group">
+      <label>Private Key Path</label>
+      <input type="text" id="settingKeyPath" placeholder="e.g. ./kalshi-private-key.key">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeSettings()">Cancel</button>
+      <button class="btn primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws=null, btcChart=null, pnlChart=null, botRunning=false;
+
+const C={
+  line:'#555',lineFill:'#55555508',
+  green:'#5c9470',greenFill:'#5c947008',
+  red:'#94525c',redFill:'#94525c08',
+  grid:'#141416',tick:'#3a3a3e',
+};
+
+function initCharts(){
+  const base={
+    responsive:true,maintainAspectRatio:false,
+    animation:{duration:200},
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{grid:{color:C.grid,drawBorder:false},ticks:{color:C.tick,font:{family:"'JetBrains Mono'",size:9},maxTicksLimit:8}},
+      y:{grid:{color:C.grid,drawBorder:false},ticks:{color:C.tick,font:{family:"'JetBrains Mono'",size:9}},position:'right'},
+    },
+  };
+  btcChart=new Chart(document.getElementById('btcChart'),{
+    type:'line',
+    data:{labels:[],datasets:[{data:[],borderColor:C.line,backgroundColor:C.lineFill,borderWidth:1.2,pointRadius:0,fill:true,tension:.3}]},
+    options:{...base,scales:{...base.scales,x:{...base.scales.x,type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'}}}}},
+  });
+  pnlChart=new Chart(document.getElementById('pnlChart'),{
+    type:'line',
+    data:{labels:[],datasets:[{data:[],borderColor:C.green,backgroundColor:C.greenFill,borderWidth:1.5,pointRadius:0,fill:true,tension:.2}]},
+    options:base,
+  });
+}
+
+async function fetchBtcPrices(){
+  try{
+    const r=await fetch('/api/btc-prices');const data=await r.json();
+    if(!data.length)return;
+    btcChart.data.labels=data.map(d=>new Date(d.ts));
+    btcChart.data.datasets[0].data=data.map(d=>d.close);
+    btcChart.update('none');
+    document.getElementById('btcPrice').textContent='$'+data[data.length-1].close.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  }catch(e){}
+}
+
+function updateUI(state){
+  botRunning=state.running;
+  const btn=document.getElementById('btnStart');
+  const ind=document.getElementById('statusIndicator');
+  const badge=document.getElementById('modeBadge');
+
+  if(state.running){
+    ind.innerHTML='<span class="status-dot on"></span>Running';
+    btn.textContent='Stop Bot';btn.className='btn danger';btn.onclick=stopBot;
+  }else{
+    ind.innerHTML='<span class="status-dot off"></span>Stopped';
+    btn.textContent='Start Bot';btn.className='btn primary';btn.onclick=startBot;
+  }
+  badge.textContent=state.mode.toUpperCase();
+  badge.className='mode-badge '+state.mode;
+
+  if(state.uptime>0){
+    const h=Math.floor(state.uptime/3600),m=Math.floor((state.uptime%3600)/60);
+    document.getElementById('uptimeText').textContent=h+'h '+m+'m';
+  }else{document.getElementById('uptimeText').textContent='';}
+
+  const st=state.stats||{};
+  document.getElementById('statBalance').textContent='$'+(state.balance||0).toFixed(2);
+
+  const pnl=st.total_pnl||0;
+  const pe=document.getElementById('statPnl');
+  pe.textContent=(pnl>=0?'+$':'-$')+Math.abs(pnl).toFixed(2);
+  pe.className='stat-value '+(pnl>=0?'pos':'neg');
+
+  const wr=st.win_rate||0;
+  const we=document.getElementById('statWR');
+  we.textContent=st.settled?(wr*100).toFixed(1)+'%':'--';
+  we.className='stat-value '+(wr>=.55?'pos':wr>=.45?'':'neg');
+  document.getElementById('statWRsub').textContent=st.settled?st.wins+'W / '+st.losses+'L':'';
+
+  document.getElementById('statTrades').textContent=st.total_trades||0;
+  document.getElementById('statTradesSub').textContent=st.pending?st.pending+' pending':'';
+  document.getElementById('statFees').textContent='$'+(st.total_fees||0).toFixed(2);
+  document.getElementById('statDD').textContent='$'+(st.max_drawdown||0).toFixed(2);
+
+  if(st.pnl_curve&&st.pnl_curve.length){
+    pnlChart.data.labels=st.pnl_curve.map((_,i)=>i+1);
+    pnlChart.data.datasets[0].data=st.pnl_curve;
+    const last=st.pnl_curve[st.pnl_curve.length-1];
+    pnlChart.data.datasets[0].borderColor=last>=0?C.green:C.red;
+    pnlChart.data.datasets[0].backgroundColor=last>=0?C.greenFill:C.redFill;
+    pnlChart.update('none');
+  }
+
+  const pp=document.getElementById('positionPanel');
+  document.getElementById('marketTicker').textContent=state.market_ticker||'';
+  const pos=state.position;
+  if(pos){
+    const sc=pos.side==='yes'?'c-yes':'c-no';
+    const hm=Math.floor((pos.hold_seconds||0)/60),hs=Math.floor((pos.hold_seconds||0)%60);
+    const cm=Math.floor((state.seconds_to_close||0)/60),cs=Math.floor((state.seconds_to_close||0)%60);
+    pp.innerHTML=`<div class="pos-grid">
+      <div class="pos-item"><div class="label">Side</div><div class="value ${sc}">${pos.side.toUpperCase()} (${pos.direction.toUpperCase()})</div></div>
+      <div class="pos-item"><div class="label">Entry</div><div class="value">${pos.entry_price}c</div></div>
+      <div class="pos-item"><div class="label">Contracts</div><div class="value">${pos.count}</div></div>
+      <div class="pos-item"><div class="label">Bet</div><div class="value">$${(pos.bet_dollars||0).toFixed(2)}</div></div>
+      <div class="pos-item"><div class="label">Holding</div><div class="value">${hm}m ${hs}s</div></div>
+      <div class="pos-item"><div class="label">Settles</div><div class="value" style="color:var(--yellow)">${cm}m ${String(cs).padStart(2,'0')}s</div></div>
+    </div>`;
+  }else{pp.innerHTML='<div class="pos-empty">No active position</div>';}
+
+  const strat=state.last_cycle||{};
+  const sp=document.getElementById('strategyPanel');
+  if(strat.rule){
+    const c1=strat.candle1_green,c2=strat.candle2_green,ema=strat.above_ema;
+    const side=(strat.chosen_side||'?').toUpperCase();
+    const sc2=strat.chosen_side==='yes'?'c-yes':'c-no';
+    const price=strat.current_price?'$'+strat.current_price.toLocaleString(undefined,{maximumFractionDigits:0}):'--';
+    sp.innerHTML=`<div class="strat-grid">
+      <div class="strat-item"><div class="label">Candle 1</div><div class="value ${c1?'c-yes':'c-no'}">${c1?'GREEN':'RED'}</div></div>
+      <div class="strat-item"><div class="label">Candle 2</div><div class="value ${c2?'c-yes':'c-no'}">${c2?'GREEN':'RED'}</div></div>
+      <div class="strat-item"><div class="label">20 EMA</div><div class="value ${ema?'c-yes':'c-no'}">${ema?'ABOVE':'BELOW'}</div></div>
+      <div class="strat-item"><div class="label">Rule</div><div class="value" style="color:var(--accent)">${strat.rule}</div></div>
+      <div class="strat-item"><div class="label">BTC</div><div class="value">${price}</div></div>
+      <div class="strat-item"><div class="label">Decision</div><div class="value ${sc2}">${side}</div></div>
+    </div>`;
+  }else{sp.innerHTML='<div class="pos-empty">Waiting for first trade...</div>';}
+
+  const logDiv=document.getElementById('logScroll');
+  const logs=state.activity_log||[];
+  if(logs.length){
+    logDiv.innerHTML=logs.map(l=>{
+      let cls='';
+      if(l.includes('WIN'))cls='win';
+      else if(l.includes('LOSS'))cls='loss';
+      else if(l.includes('FILLED'))cls='fill';
+      else if(l.includes('GREEN')||l.includes('RED')||l.includes('->'))cls='signal';
+      return '<div class="log-line '+cls+'">'+esc(l)+'</div>';
+    }).join('');
+    logDiv.scrollTop=logDiv.scrollHeight;
+  }
+
+  const trades=state.recent_trades||[];
+  const tb=document.getElementById('tradeBody');
+  if(trades.length){
+    tb.innerHTML=trades.slice().reverse().map(t=>{
+      const ts=new Date(t.ts*1000).toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit'});
+      const market=(t.market||'').slice(-15);
+      const sc=t.side==='yes'?'c-yes':'c-no';
+      let rc='pending',rt='OPEN';
+      if(t.outcome===true){rc='win';rt='WIN';}
+      else if(t.outcome===false){rc='loss';rt='LOSS';}
+      const p=t.pnl_dollars!=null?(t.pnl_dollars>=0?'+':'')+t.pnl_dollars.toFixed(2):'--';
+      const pc=t.pnl_dollars!=null?(t.pnl_dollars>=0?'win':'loss'):'';
+      return `<tr><td>${ts}</td><td>${market}</td><td class="${sc}">${(t.side||'').toUpperCase()}</td><td>${t.fill_price_cents||0}c</td><td>$${(t.bet_dollars||0).toFixed(0)}</td><td class="${rc}">${rt}</td><td class="${pc}">${p}</td></tr>`;
+    }).join('');
+  }
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host+'/ws');
+  ws.onmessage=e=>{try{updateUI(JSON.parse(e.data));}catch(err){}};
+  ws.onclose=()=>setTimeout(connectWS,3000);
+  ws.onerror=()=>ws.close();
+}
+
+async function startBot(){
+  try{const r=await fetch('/api/bot/start',{method:'POST'});const d=await r.json();if(d.error)alert(d.error);}catch(e){alert('Failed');}
+}
+async function stopBot(){
+  if(!confirm('Stop the bot?'))return;
+  try{const r=await fetch('/api/bot/stop',{method:'POST'});const d=await r.json();if(d.error)alert(d.error);}catch(e){}
+}
+async function resetStats(){
+  if(!confirm('Reset all trade history, stats, and PnL? This cannot be undone.'))return;
+  try{
+    const r=await fetch('/api/reset',{method:'POST'});const d=await r.json();
+    if(d.error){alert(d.error);return;}
+    location.reload();
+  }catch(e){alert('Failed to reset');}
+}
+
+async function openSettings(){
+  try{const r=await fetch('/api/settings');const s=await r.json();
+    document.getElementById('settingMode').value=s.mode||'demo';
+    document.getElementById('settingApiKey').value=s.api_key_id||'';
+    document.getElementById('settingKeyPath').value=s.private_key_path||'';
+  }catch(e){}
+  document.getElementById('settingsModal').classList.add('open');
+}
+function closeSettings(){document.getElementById('settingsModal').classList.remove('open');}
+async function saveSettings(){
+  const body={mode:document.getElementById('settingMode').value,api_key_id:document.getElementById('settingApiKey').value,private_key_path:document.getElementById('settingKeyPath').value};
+  try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(d.error){alert(d.error);return;}closeSettings();location.reload();}catch(e){alert('Failed');}
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  initCharts();fetchBtcPrices();connectWS();
+  setInterval(fetchBtcPrices,60000);
+  setInterval(async()=>{
+    try{
+      const[stats,status,trades,logs]=await Promise.all([fetch('/api/stats').then(r=>r.json()),fetch('/api/status').then(r=>r.json()),fetch('/api/trades').then(r=>r.json()),fetch('/api/activity').then(r=>r.json())]);
+      updateUI({...status,stats,recent_trades:trades,activity_log:logs});
+    }catch(e){}
+  },5000);
+});
+document.getElementById('settingsModal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSettings();});
+</script>
+</body>
+</html>

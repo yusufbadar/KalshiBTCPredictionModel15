@@ -50,6 +50,14 @@ requirements.txt.bak
 # Old requirements (renamed to requirements.txt)
 requirements_kalshi.txt
 
+# Private keys and secrets
+*.key
+*.pem
+kalshi-private-key.key
+
+# Web dashboard runtime settings (may contain API key references)
+kalshi_bot/storage/data/web_settings.json
+
 # Misc
 *.log
 *.pkl

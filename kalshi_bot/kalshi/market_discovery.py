@@ -46,7 +46,7 @@ class MarketInfo:
 
     @property
     def is_open(self) -> bool:
-        return self.status == "open"
+        return self.status in ("open", "active")
 
     @property
     def mid_price(self) -> float:

@@ -52,7 +52,7 @@ class Retrainer:
 
         if trades_since >= ML.retrain_every_n_trades:
             return True
-        if hours_since >= ML.retrain_every_hours and trades_since > 10:
+        if hours_since >= ML.retrain_every_hours and trades_since >= 20:
             return True
         return False
 

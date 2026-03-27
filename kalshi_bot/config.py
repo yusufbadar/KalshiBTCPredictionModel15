@@ -53,16 +53,21 @@ def get_kalshi_ws_url() -> str:
 # ---------------------------------------------------------------------------
 @dataclass
 class TradingConfig:
-    bet_size_dollars: float = 10.0
-    reduced_bet_size_dollars: float = 5.0
-    reduce_bet_threshold: float = 60.0       # reduce bet when balance < $60
-    bankroll_floor: float = 20.0             # stop trading below $20
-    daily_loss_limit: float = 30.0           # stop after $30 daily loss
-    confidence_threshold: float = 0.60       # minimum model confidence to trade
-    consecutive_loss_pause: int = 4          # pause after N consecutive losses
-    pause_duration_minutes: int = 60         # pause duration in minutes
-    trade_entry_minutes_before_close: int = 2  # enter ~2 min before market close
+    min_bet_size_dollars: float = 5.0
+    max_bet_size_dollars: float = 15.0
+    bet_size_dollars: float = 5.0
+    bankroll_floor: float = 5.0
     max_open_positions: int = 1
+
+    # Timing
+    entry_delay_seconds: int = 45            # wait for market to establish
+    min_time_remaining: int = 120            # don't enter if < 2 min left
+
+    # EV-based sizing tiers (cents of expected value)
+    ev_tier_1: float = 1.5                   # below: minimum size
+    ev_tier_2: float = 4.0                   # above: largest size
+    size_multiplier_2: int = 2               # multiplier for tier 1–2
+    size_multiplier_3: int = 3               # multiplier for tier 2+
 
 
 TRADING = TradingConfig()
@@ -73,21 +78,22 @@ TRADING = TradingConfig()
 # ---------------------------------------------------------------------------
 @dataclass
 class MLConfig:
-    retrain_every_n_trades: int = 50
+    model_type: str = "logistic"             # "logistic" or "xgboost"
+    retrain_every_n_trades: int = 96         # ~1 day of 15-min windows
     retrain_every_hours: int = 24
     min_training_samples: int = 200
-    lookback_candles: int = 100          # how many 1-min candles to keep
-    model_version_keep: int = 5          # keep last N model versions
+    lookback_candles: int = 100
+    model_version_keep: int = 5
     xgb_params: dict = field(default_factory=lambda: {
-        "n_estimators": 300,
-        "max_depth": 5,
+        "n_estimators": 100,
+        "max_depth": 2,
         "learning_rate": 0.05,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
-        "min_child_weight": 3,
-        "gamma": 0.1,
-        "reg_alpha": 0.1,
-        "reg_lambda": 1.0,
+        "min_child_weight": 5,
+        "gamma": 0.2,
+        "reg_alpha": 0.5,
+        "reg_lambda": 2.0,
         "objective": "binary:logistic",
         "eval_metric": "logloss",
     })

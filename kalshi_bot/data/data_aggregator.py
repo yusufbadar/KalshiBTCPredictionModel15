@@ -63,7 +63,7 @@ class DataSnapshot:
 
     @property
     def is_valid(self) -> bool:
-        return self.btc_price is not None and len(self.candles_1m) >= 14
+        return self.btc_price is not None or len(self.candles_1m) >= 1
 
 
 class DataAggregator:

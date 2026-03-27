@@ -5,19 +5,16 @@ evolution, and confidence calibration.
 from __future__ import annotations
 
 from collections import deque
-from typing import Optional
 
 import numpy as np
-from loguru import logger
 
 from kalshi_bot.learning.trade_logger import TradeLogger
-from kalshi_bot.ml.predictor import Predictor
 
 
 class PerformanceAnalyzer:
     """Live analytics computed from the trade log."""
 
-    def __init__(self, trade_logger: TradeLogger, predictor: Predictor):
+    def __init__(self, trade_logger: TradeLogger, predictor=None):
         self.log = trade_logger
         self.predictor = predictor
         self._recent_outcomes: deque[bool] = deque(maxlen=100)
@@ -93,6 +90,8 @@ class PerformanceAnalyzer:
         return count if last else -count
 
     def feature_importance_report(self) -> dict[str, float]:
+        if self.predictor is None:
+            return {}
         return self.predictor.feature_importance()
 
     def calibration_offset(self) -> float:
