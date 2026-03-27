@@ -217,10 +217,40 @@ class TradingEngine:
 
         bet_dollars = risk_decision.bet_dollars
         cost_per = price_cents / 100.0
-        count = max(1, int(bet_dollars / cost_per))
-        total_fees = fee_cents * count
+        count_target = max(1, int(bet_dollars / cost_per))
 
-        # ── 7. Place order (GTC limit with retry + fill polling) ─────
+        swept = self.kalshi_ob.sweep_buy(market.ticker, side, count_target)
+        if not swept:
+            result["action"] = "skip"
+            result["reason"] = "no orderbook liquidity for immediate fill"
+            self._log_activity("FOK skip: empty or insufficient book for sweep")
+            self.last_cycle = result
+            return result
+
+        limit_cents, book_cap = swept
+        max_by_risk = int(bet_dollars / (limit_cents / 100.0))
+        if max_by_risk < 1:
+            result["action"] = "skip"
+            result["reason"] = "bet too small at swept limit price"
+            self.last_cycle = result
+            return result
+
+        count = min(book_cap, max_by_risk)
+        if count < 1:
+            result["action"] = "skip"
+            result["reason"] = "no contracts after risk cap"
+            self.last_cycle = result
+            return result
+
+        if count < count_target:
+            self._log_activity(
+                f"FOK size {count} (book/risk cap; requested ~{count_target})"
+            )
+
+        price_cents = limit_cents
+        fee_cents = estimate_fee_cents(price_cents)
+
+        # ── 7. Place FOK at swept limit (full size or no trade) ────
         order_resp = None
         order_id = None
         for attempt in range(3):
@@ -232,7 +262,7 @@ class TradingEngine:
                     count=count,
                     yes_price=price_cents if side == "yes" else None,
                     no_price=price_cents if side == "no" else None,
-                    time_in_force="good_till_canceled",
+                    time_in_force="fill_or_kill",
                 )
                 order = order_resp.get("order", {})
                 order_id = order.get("order_id", "unknown")
@@ -249,42 +279,28 @@ class TradingEngine:
                     self.last_cycle = result
                     return result
 
-        self._log_activity(
-            f"Order placed: {count}x {side.upper()} @ {price_cents}c -- waiting for fills..."
-        )
-
-        filled = 0
-        poll_deadline = time.time() + 5
-        while time.time() < poll_deadline:
-            await asyncio.sleep(1)
+        filled = int(order.get("count_filled", 0) or 0)
+        if filled != count:
             try:
                 status = self.client.get_order(order_id)
-                order_data = status.get("order", status)
-                filled = int(order_data.get("count_filled", 0) or 0)
-                order_status = order_data.get("status", "")
-                if filled > 0 or order_status in ("filled", "canceled", "cancelled"):
-                    break
+                od = status.get("order", status)
+                filled = int(od.get("count_filled", 0) or filled)
             except Exception as poll_err:
-                logger.warning("Poll error: {}", poll_err)
-
-        if filled < count:
-            try:
-                self.client.cancel_order(order_id)
-                if filled > 0:
-                    self._log_activity(
-                        f"Cancelled remaining {count - filled} unfilled contracts"
-                    )
-            except Exception:
-                pass
+                logger.warning("FOK verify get_order: {}", poll_err)
 
         if filled == 0:
             self._log_activity(
-                f"0 contracts filled after 5s (requested {count})"
+                f"FOK: 0 filled (requested {count} @ {price_cents}c)"
             )
             result["action"] = "no_fill"
-            result["reason"] = "0 contracts filled"
+            result["reason"] = "fill_or_kill did not fill"
             self.last_cycle = result
             return result
+
+        if filled != count:
+            self._log_activity(
+                f"FOK partial: {filled}/{count} @ {price_cents}c — treating as fill"
+            )
 
         actual_cost = round(filled * (price_cents / 100.0), 2)
         actual_fees = round(fee_cents * filled, 2)

@@ -13,6 +13,76 @@ from loguru import logger
 from kalshi_bot.kalshi.client import KalshiClient
 
 
+def _clamp_cents(c: int) -> int:
+    return max(1, min(99, c))
+
+
+def _implied_yes_ask_cents(no_bid_dollars: float) -> int:
+    return _clamp_cents(int(round((1.0 - float(no_bid_dollars)) * 100)))
+
+
+def _implied_no_ask_cents(yes_bid_dollars: float) -> int:
+    return _clamp_cents(int(round((1.0 - float(yes_bid_dollars)) * 100)))
+
+
+def sweep_yes_buy_limit(no_bids: list, want: int) -> tuple[int, int] | None:
+    """Walk NO bid ladder (implied YES asks), best first.
+
+    Returns (yes_limit_cents, fillable_count) with fillable_count <= want,
+    or None if no size.
+    """
+    if want < 1 or not no_bids:
+        return None
+    need = want
+    worst = 0
+    for i in range(len(no_bids) - 1, -1, -1):
+        row = no_bids[i]
+        nb = float(row[0])
+        qty = int(float(row[1]))
+        if qty < 1:
+            continue
+        yac = _implied_yes_ask_cents(nb)
+        take = min(need, qty)
+        if take > 0:
+            worst = max(worst, yac)
+        need -= take
+        if need <= 0:
+            lim = min(99, worst + 1)
+            return lim, want
+    got = want - need
+    if got < 1:
+        return None
+    lim = min(99, worst + 1)
+    return lim, got
+
+
+def sweep_no_buy_limit(yes_bids: list, want: int) -> tuple[int, int] | None:
+    """Walk YES bid ladder (implied NO asks), best first."""
+    if want < 1 or not yes_bids:
+        return None
+    need = want
+    worst = 0
+    for i in range(len(yes_bids) - 1, -1, -1):
+        row = yes_bids[i]
+        yb = float(row[0])
+        qty = int(float(row[1]))
+        if qty < 1:
+            continue
+        nac = _implied_no_ask_cents(yb)
+        take = min(need, qty)
+        if take > 0:
+            worst = max(worst, nac)
+        need -= take
+        if need <= 0:
+            lim = min(99, worst + 1)
+            return lim, want
+    got = want - need
+    if got < 1:
+        return None
+    lim = min(99, worst + 1)
+    return lim, got
+
+
 class KalshiOrderbookFeed:
     def __init__(self, client: KalshiClient):
         self.client = client
@@ -65,4 +135,24 @@ class KalshiOrderbookFeed:
 
         except Exception as e:
             logger.warning("Kalshi orderbook fetch failed for {}: {}", ticker, e)
+            return None
+
+    def sweep_buy(self, ticker: str, side: str, want: int) -> Optional[tuple[int, int]]:
+        """Fresh orderbook sweep for an immediate buy: (limit_cents, max_contracts).
+
+        ``side`` is ``yes`` or ``no``. Limit is set to cover the worst level
+        needed for up to ``want`` contracts (plus 1¢ headroom), capped at 99.
+        """
+        if want < 1:
+            return None
+        try:
+            raw = self.client.get_market_orderbook(ticker)
+            ob = raw.get("orderbook_fp") or raw.get("orderbook", {})
+            yes_bids = ob.get("yes_dollars", ob.get("yes", []))
+            no_bids = ob.get("no_dollars", ob.get("no", []))
+            if side == "yes":
+                return sweep_yes_buy_limit(no_bids, want)
+            return sweep_no_buy_limit(yes_bids, want)
+        except Exception as e:
+            logger.warning("Kalshi sweep_buy failed for {} {}: {}", ticker, side, e)
             return None
