@@ -1,12 +1,7 @@
 """
-Risk manager — gentle EV-based sizing.
+Risk manager — percentage-of-balance sizing.
 
-Bets every interval.  Size scales with the magnitude of the expected
-value in three tiers.  No Kelly.  No confidence thresholds.
-
-  EV < 1.5c  →  minimum bet
-  1.5–4c     →  2× minimum
-  > 4c       →  3× minimum
+Bets a fixed fraction (default 9%) of the current balance each trade.
 """
 from __future__ import annotations
 
@@ -27,8 +22,7 @@ class RiskManager:
         self._daily_loss: float = 0.0
         self._daily_reset_date: str = ""
 
-    def check(self, balance: float, ev_cents: float) -> RiskDecision:
-        """Decide bet size based on balance and EV magnitude."""
+    def check(self, balance: float, ev_cents: float = 0.0) -> RiskDecision:
         self._maybe_reset_daily()
 
         if balance < TRADING.bankroll_floor:
@@ -37,24 +31,16 @@ class RiskManager:
                 f"Balance ${balance:.2f} < floor ${TRADING.bankroll_floor}",
             )
 
-        abs_ev = abs(ev_cents)
-        if abs_ev >= TRADING.ev_tier_2:
-            bet = TRADING.min_bet_size_dollars * TRADING.size_multiplier_3
-        elif abs_ev >= TRADING.ev_tier_1:
-            bet = TRADING.min_bet_size_dollars * TRADING.size_multiplier_2
-        else:
-            bet = TRADING.min_bet_size_dollars
+        bet = round(balance * TRADING.bet_fraction, 2)
 
-        bet = min(bet, TRADING.max_bet_size_dollars)
-        bet = min(bet, balance - TRADING.bankroll_floor)
+        available = balance - TRADING.bankroll_floor
+        if bet > available:
+            bet = round(available, 2)
 
-        if bet < TRADING.min_bet_size_dollars:
-            if balance >= TRADING.bankroll_floor + TRADING.min_bet_size_dollars:
-                bet = TRADING.min_bet_size_dollars
-            else:
-                return RiskDecision(False, 0, "Balance too low for minimum bet")
+        if bet < 1.0:
+            return RiskDecision(False, 0, "Bet size too small (< $1)")
 
-        return RiskDecision(True, round(bet, 2))
+        return RiskDecision(True, bet)
 
     def record_loss(self, amount: float):
         self._daily_loss += abs(amount)

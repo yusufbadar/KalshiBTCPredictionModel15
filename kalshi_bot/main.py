@@ -171,7 +171,7 @@ async def run_bot(live: bool = False):
                             alert_trade(
                                 cycle.get("direction", "?"),
                                 cycle.get("market", "?"),
-                                cycle.get("bet_dollars", cfg.TRADING.bet_size_dollars),
+                                cycle.get("bet_dollars", 0),
                                 cycle.get("price_cents", 0),
                             )
 

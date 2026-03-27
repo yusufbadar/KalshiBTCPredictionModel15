@@ -53,21 +53,13 @@ def get_kalshi_ws_url() -> str:
 # ---------------------------------------------------------------------------
 @dataclass
 class TradingConfig:
-    min_bet_size_dollars: float = 5.0
-    max_bet_size_dollars: float = 15.0
-    bet_size_dollars: float = 5.0
+    bet_fraction: float = 0.09               # bet 9% of balance each trade
     bankroll_floor: float = 5.0
     max_open_positions: int = 1
 
     # Timing
-    entry_delay_seconds: int = 45            # wait for market to establish
-    min_time_remaining: int = 120            # don't enter if < 2 min left
-
-    # EV-based sizing tiers (cents of expected value)
-    ev_tier_1: float = 1.5                   # below: minimum size
-    ev_tier_2: float = 4.0                   # above: largest size
-    size_multiplier_2: int = 2               # multiplier for tier 1–2
-    size_multiplier_3: int = 3               # multiplier for tier 2+
+    entry_delay_seconds: int = 45
+    min_time_remaining: int = 120
 
 
 TRADING = TradingConfig()
