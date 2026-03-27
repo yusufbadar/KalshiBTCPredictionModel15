@@ -174,6 +174,25 @@ async def run_bot(live: bool = False):
                                 cycle.get("bet_dollars", 0),
                                 cycle.get("price_cents", 0),
                             )
+                        elif cycle.get("action") == "no_fill":
+                            ch = cycle.get("chosen_side") or engine.last_cycle.get(
+                                "chosen_side"
+                            )
+                            if ch:
+                                d = "up" if ch == "yes" else "down"
+                                if await engine.repair_entry_from_exchange(
+                                    market.ticker,
+                                    ch,
+                                    d,
+                                    cycle.get("order_id"),
+                                ):
+                                    last_traded_market = market.ticker
+                                    alert_trade(
+                                        engine.last_cycle.get("direction", "?"),
+                                        market.ticker,
+                                        engine.last_cycle.get("bet_dollars", 0),
+                                        engine.last_cycle.get("price_cents", 0),
+                                    )
 
                         balance = client.get_balance_dollars()
                         dashboard = build_dashboard(

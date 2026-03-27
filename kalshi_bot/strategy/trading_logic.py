@@ -19,7 +19,7 @@ from typing import Optional
 from loguru import logger
 
 from kalshi_bot.config import TRADING
-from kalshi_bot.kalshi.client import KalshiClient
+from kalshi_bot.kalshi.client import KalshiClient, _fp_dollars, order_filled_count
 from kalshi_bot.kalshi.market_discovery import MarketDiscovery
 from kalshi_bot.data.binance_feed import BinanceFeed
 from kalshi_bot.data.kalshi_orderbook import KalshiOrderbookFeed
@@ -71,6 +71,203 @@ class TradingEngine:
         self.current_position: Optional[dict] = None
         self.activity_log: list[str] = []
         self.last_cycle: dict = {}
+
+    def _record_entry_fill(
+        self,
+        market_ticker: str,
+        side: str,
+        direction: str,
+        order_id: str,
+        filled: int,
+        fill_price_cents: int,
+        fees_cents: float,
+        result: dict,
+    ) -> None:
+        """Update position, trade log, and ``result`` from an executed buy."""
+        actual_cost = round(filled * (fill_price_cents / 100.0), 2)
+        actual_fees = round(fees_cents, 2)
+        self._log_activity(
+            f"FILLED: {filled}x {side.upper()} @ {fill_price_cents:.0f}c avg "
+            f"(${actual_cost:.2f}, fees ~{actual_fees:.0f}c)"
+        )
+        self.current_position = {
+            "side": side,
+            "direction": direction,
+            "entry_price": fill_price_cents,
+            "count": filled,
+            "bet_dollars": actual_cost,
+            "order_id": order_id,
+            "entry_time": time.time(),
+        }
+        result.update({
+            "action": "traded",
+            "direction": direction,
+            "side": side,
+            "count": filled,
+            "price_cents": fill_price_cents,
+            "order_id": order_id,
+            "bet_dollars": actual_cost,
+            "fees_cents": actual_fees,
+        })
+        self._last_traded_market = market_ticker
+        record = TradeRecord(
+            ts=time.time(),
+            market_ticker=market_ticker,
+            prob_up=0.5,
+            confidence=0.0,
+            direction=direction,
+            bet_dollars=actual_cost,
+            yes_price=fill_price_cents / 100.0,
+            order_id=order_id,
+            fill_price_cents=int(round(fill_price_cents)),
+            fill_count=filled,
+            fees_cents=actual_fees,
+            side=side,
+            entry_type="entry",
+        )
+        self.trade_logger.append(record)
+
+    async def _reconcile_buy_execution(
+        self,
+        order_id: str,
+        ticker: str,
+        side: str,
+        requested_count: int,
+        limit_cents: int,
+        order: dict,
+    ) -> tuple[int, int, float]:
+        """Return ``(filled, fill_price_cents, fees_cents)`` using order, fills, then position."""
+        if not order_id or order_id == "unknown":
+            return (0, 0, 0.0)
+
+        def from_agg(agg: dict) -> tuple[int, int, float]:
+            n = int(agg["count"])
+            vwap = float(agg["vwap_dollars"])
+            fc = max(0.0, float(agg["fees_dollars"]) * 100.0)
+            pc = max(1, min(99, int(round(vwap * 100))))
+            return (n, pc, fc)
+
+        agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+        if agg:
+            return from_agg(agg)
+
+        filled = order_filled_count(order)
+        await asyncio.sleep(0.35)
+        agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+        if agg:
+            return from_agg(agg)
+        if filled > 0:
+            for _ in range(8):
+                agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+                if agg:
+                    return from_agg(agg)
+                await asyncio.sleep(0.25)
+            fee_est = float(estimate_fee_cents(limit_cents) * filled)
+            return (filled, limit_cents, fee_est)
+
+        for _ in range(28):
+            if filled <= 0:
+                agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+                if agg:
+                    return from_agg(agg)
+            try:
+                st = self.client.get_order(order_id)
+                od = st.get("order", st)
+                filled = order_filled_count(od)
+            except Exception as e:
+                logger.warning("reconcile get_order: {}", e)
+            if filled > 0:
+                agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+                if agg:
+                    return from_agg(agg)
+                fee_est = estimate_fee_cents(limit_cents) * filled
+                return (filled, limit_cents, fee_est)
+            await asyncio.sleep(0.45)
+
+        agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+        if agg:
+            return from_agg(agg)
+
+        row = self.client.get_market_position_row(ticker)
+        if row:
+            pc = self.client.position_contracts_for_side(row, side)
+            if pc > 0:
+                exp = _fp_dollars(row.get("market_exposure_dollars"))
+                vwap = exp / pc if pc else 0.0
+                price_c = max(1, min(99, int(round(vwap * 100))))
+                fees = _fp_dollars(row.get("fees_paid_dollars")) * 100.0
+                if fees <= 0:
+                    fees = float(estimate_fee_cents(price_c) * pc)
+                return (pc, price_c, fees)
+
+        return (0, 0, 0.0)
+
+    async def repair_entry_from_exchange(
+        self,
+        ticker: str,
+        side: str,
+        direction: str,
+        order_id: str | None,
+    ) -> bool:
+        """If we have no local position but the exchange shows a fill, sync state."""
+        if self.current_position:
+            return False
+        if order_id and order_id != "unknown":
+            for r in self.trade_logger.read_all():
+                if r.order_id == order_id and r.entry_type == "entry":
+                    return False
+            try:
+                agg = self.client.aggregate_buy_fills_for_order(order_id, side)
+                if agg:
+                    n = int(agg["count"])
+                    vwap = float(agg["vwap_dollars"])
+                    fc = max(0.0, float(agg["fees_dollars"]) * 100.0)
+                    pc = max(1, min(99, int(round(vwap * 100))))
+                    result = dict(self.last_cycle)
+                    result["market"] = ticker
+                    self._record_entry_fill(
+                        ticker, side, direction, order_id, n, pc, fc, result
+                    )
+                    self.last_cycle = result
+                    self._log_activity(
+                        f"Repaired entry from fills API (order {order_id[:12]}…)"
+                    )
+                    return True
+            except Exception as e:
+                logger.warning("repair fills: {}", e)
+
+        try:
+            row = self.client.get_market_position_row(ticker)
+            if not row:
+                return False
+            pc = self.client.position_contracts_for_side(row, side)
+            if pc < 1:
+                return False
+            for r in reversed(self.trade_logger.read_all()):
+                if r.market_ticker != ticker or r.entry_type != "entry":
+                    continue
+                if r.outcome is None and r.side == side and r.fill_count == pc:
+                    return False
+            exp = _fp_dollars(row.get("market_exposure_dollars"))
+            vwap = exp / pc if pc else 0.0
+            price_c = max(1, min(99, int(round(vwap * 100))))
+            fees = _fp_dollars(row.get("fees_paid_dollars")) * 100.0
+            if fees <= 0:
+                fees = float(estimate_fee_cents(price_c) * pc)
+            oid = order_id or f"sync-{int(time.time())}"
+            result = dict(self.last_cycle)
+            result["market"] = ticker
+            self._record_entry_fill(
+                ticker, side, direction, oid, pc, price_c, fees, result
+            )
+            self.last_cycle = result
+            self._log_activity(
+                f"Repaired entry from portfolio position ({pc}x {side.upper()})"
+            )
+            return True
+        except Exception as e:
+            logger.warning("repair position: {}", e)
+            return False
 
     def _log_activity(self, msg: str):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -204,7 +401,6 @@ class TradingEngine:
             ask_price = ob.get("best_no_ask", 0.55)
 
         price_cents = max(1, min(99, int(round(ask_price * 100))))
-        fee_cents = estimate_fee_cents(price_cents)
 
         # ── 6. Size the bet ─────────────────────────────────────────
         balance = self.client.get_balance_dollars()
@@ -248,7 +444,6 @@ class TradingEngine:
             )
 
         price_cents = limit_cents
-        fee_cents = estimate_fee_cents(price_cents)
 
         # ── 7. Place FOK at swept limit (full size or no trade) ────
         order_resp = None
@@ -279,78 +474,44 @@ class TradingEngine:
                     self.last_cycle = result
                     return result
 
-        filled = int(order.get("count_filled", 0) or 0)
-        if filled != count:
-            try:
-                status = self.client.get_order(order_id)
-                od = status.get("order", status)
-                filled = int(od.get("count_filled", 0) or filled)
-            except Exception as poll_err:
-                logger.warning("FOK verify get_order: {}", poll_err)
+        self._log_activity(
+            f"Order submitted: {count}x {side.upper()} FOK limit {price_cents}c — reconciling…"
+        )
+        filled, fill_px, fees_cents = await self._reconcile_buy_execution(
+            order_id,
+            market.ticker,
+            side,
+            count,
+            price_cents,
+            order,
+        )
 
         if filled == 0:
+            oid_short = order_id if len(order_id) <= 14 else f"{order_id[:12]}…"
             self._log_activity(
-                f"FOK: 0 filled (requested {count} @ {price_cents}c)"
+                f"No fill confirmed (requested {count} @ {price_cents}c, order {oid_short})"
             )
             result["action"] = "no_fill"
-            result["reason"] = "fill_or_kill did not fill"
+            result["reason"] = "exchange reported no fill (order/fills/position)"
+            result["order_id"] = order_id
             self.last_cycle = result
             return result
 
-        if filled != count:
+        if filled < count:
             self._log_activity(
-                f"FOK partial: {filled}/{count} @ {price_cents}c — treating as fill"
+                f"Partial fill confirmed: {filled}/{count} (avg {fill_px}c)"
             )
 
-        actual_cost = round(filled * (price_cents / 100.0), 2)
-        actual_fees = round(fee_cents * filled, 2)
-
-        self._log_activity(
-            f"FILLED: {filled}x {side.upper()} @ {price_cents}c "
-            f"(${actual_cost:.2f}, fee ~{actual_fees:.0f}c)"
+        self._record_entry_fill(
+            market.ticker,
+            side,
+            direction,
+            order_id,
+            filled,
+            fill_px,
+            fees_cents,
+            result,
         )
-
-        self.current_position = {
-            "side": side,
-            "direction": direction,
-            "entry_price": price_cents,
-            "count": filled,
-            "bet_dollars": actual_cost,
-            "order_id": order_id,
-            "entry_time": time.time(),
-        }
-
-        result.update({
-            "action": "traded",
-            "direction": direction,
-            "side": side,
-            "count": filled,
-            "price_cents": price_cents,
-            "order_id": order_id,
-            "bet_dollars": actual_cost,
-            "fees_cents": actual_fees,
-        })
-
-        self._last_traded_market = market.ticker
-
-        # ── 8. Log trade ────────────────────────────────────────────
-        record = TradeRecord(
-            ts=time.time(),
-            market_ticker=market.ticker,
-            prob_up=0.5,
-            confidence=0.0,
-            direction=direction,
-            bet_dollars=actual_cost,
-            yes_price=price_cents / 100.0,
-            order_id=order_id,
-            fill_price_cents=price_cents,
-            fill_count=filled,
-            fees_cents=actual_fees,
-            side=side,
-            entry_type="entry",
-        )
-        self.trade_logger.append(record)
-
         self.last_cycle = result
         return result
 

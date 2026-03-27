@@ -222,6 +222,24 @@ async def _run_bot_loop():
                 except Exception:
                     pass
                 await _sync_engine_state(engine)
+                try:
+                    if (
+                        not engine.current_position
+                        and engine.last_cycle.get("action") == "no_fill"
+                    ):
+                        m = discovery.get_current_market()
+                        ch = engine.last_cycle.get("chosen_side")
+                        mk = engine.last_cycle.get("market")
+                        if m and ch and mk and m.ticker == mk:
+                            d = "up" if ch == "yes" else "down"
+                            await engine.repair_entry_from_exchange(
+                                m.ticker,
+                                ch,
+                                d,
+                                engine.last_cycle.get("order_id"),
+                            )
+                except Exception:
+                    pass
                 await asyncio.sleep(5)
 
         engine._log_activity("Connecting to Binance...")
@@ -298,6 +316,19 @@ async def _run_bot_loop():
                         cycle = await engine.run_cycle()
                         if cycle.get("action") == "traded":
                             last_traded_market = market.ticker
+                        elif cycle.get("action") == "no_fill":
+                            ch = cycle.get("chosen_side") or engine.last_cycle.get(
+                                "chosen_side"
+                            )
+                            if ch:
+                                d = "up" if ch == "yes" else "down"
+                                if await engine.repair_entry_from_exchange(
+                                    market.ticker,
+                                    ch,
+                                    d,
+                                    cycle.get("order_id"),
+                                ):
+                                    last_traded_market = market.ticker
 
                 if last_traded_market and market.ticker == last_traded_market:
                     settlement = await engine.check_settlement(last_traded_market)

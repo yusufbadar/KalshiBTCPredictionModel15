@@ -16,6 +16,45 @@ from kalshi_bot.kalshi.auth import KalshiAuth
 from kalshi_bot.config import get_kalshi_base_url
 
 
+def _fp_count(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fp_dollars(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def order_filled_count(order: dict[str, Any]) -> int:
+    """Best-effort filled contracts from a Kalshi order object."""
+    if not order:
+        return 0
+    for key in ("count_filled", "filled_count", "fill_count"):
+        raw = order.get(key)
+        if raw is not None:
+            try:
+                return max(0, int(raw))
+            except (TypeError, ValueError):
+                pass
+    leaves = order.get("leaves") or order.get("remaining_count") or order.get("open_count")
+    total = order.get("count") or order.get("initial_count") or order.get("order_count")
+    if leaves is not None and total is not None:
+        try:
+            return max(0, int(total) - int(leaves))
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 class KalshiClient:
     """Thin, synchronous wrapper around the Kalshi Trade-API v2."""
 
@@ -174,6 +213,65 @@ class KalshiClient:
 
     def get_orders(self, **kwargs) -> dict:
         return self.get("/portfolio/orders", params=kwargs or None)
+
+    def aggregate_buy_fills_for_order(self, order_id: str, side: str) -> Optional[dict[str, Any]]:
+        """Sum buy fills for ``order_id`` on ``side`` (``yes`` / ``no``).
+
+        Returns ``count``, ``vwap_dollars`` (price for that side), ``fees_dollars``,
+        or ``None`` if no matching fills.
+        """
+        data = self.get_fills(order_id=order_id, limit=200)
+        fills = data.get("fills") or []
+        if not fills:
+            return None
+        total = 0
+        fee_d = 0.0
+        cost_weighted = 0.0
+        for f in fills:
+            if (f.get("action") or "").lower() != "buy":
+                continue
+            if (f.get("side") or "").lower() != side:
+                continue
+            c = _fp_count(f.get("count_fp"))
+            if c <= 0:
+                c = int(f.get("count") or 0)
+            if c <= 0:
+                continue
+            if side == "yes":
+                p = _fp_dollars(f.get("yes_price_dollars"))
+            else:
+                p = _fp_dollars(f.get("no_price_dollars"))
+            total += c
+            cost_weighted += p * c
+            fee_d += _fp_dollars(f.get("fee_cost"))
+        if total <= 0:
+            return None
+        return {
+            "count": total,
+            "vwap_dollars": cost_weighted / total,
+            "fees_dollars": fee_d,
+        }
+
+    def get_market_position_row(self, ticker: str) -> Optional[dict[str, Any]]:
+        """Return the ``market_positions`` row for ``ticker``, if any."""
+        data = self.get_positions(ticker=ticker, limit=100)
+        for row in data.get("market_positions") or []:
+            if row.get("ticker") == ticker:
+                return row
+        return None
+
+    def position_contracts_for_side(self, row: dict[str, Any], side: str) -> int:
+        """Long YES -> positive ``position_fp``; long NO -> negative."""
+        fp = row.get("position_fp") or row.get("position")
+        try:
+            v = float(str(fp).strip()) if fp is not None else 0.0
+        except (TypeError, ValueError):
+            v = 0.0
+        if side == "yes" and v > 0:
+            return int(v)
+        if side == "no" and v < 0:
+            return int(abs(v))
+        return 0
 
     # ------------------------------------------------------------------
     # Exchange status
