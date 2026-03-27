@@ -89,12 +89,14 @@ class TradingEngine:
         market = self.discovery.get_current_market()
         if market is None:
             result["reason"] = "no open market found"
+            self.last_cycle = result
             return result
 
         result["market"] = market.ticker
 
         if market.ticker == self._last_traded_market:
             result["reason"] = "already traded this market"
+            self.last_cycle = result
             return result
 
         # Wait until 10 minutes into the window (5 min before close)
@@ -116,6 +118,7 @@ class TradingEngine:
         market = self.discovery.get_current_market()
         if market is None or market.seconds_until_close < 240:
             result["reason"] = "too late to enter after wait"
+            self.last_cycle = result
             return result
 
         self._log_activity(
@@ -126,6 +129,7 @@ class TradingEngine:
         candles_5m = await self.binance.get_klines("5m", 50)
         if len(candles_5m) < 22:
             result["reason"] = "not enough 5m candle data"
+            self.last_cycle = result
             return result
 
         # ── 2. Find the two candles inside this window ──────────────
@@ -143,6 +147,7 @@ class TradingEngine:
         if candle1 is None or candle2 is None:
             result["reason"] = "could not find intra-window 5m candles"
             self._log_activity("Missing 5m candles for current window")
+            self.last_cycle = result
             return result
 
         # ── 3. Compute 20 EMA ───────────────────────────────────────
@@ -207,6 +212,7 @@ class TradingEngine:
         if not risk_decision.allowed:
             result["action"] = "skip"
             result["reason"] = risk_decision.reason
+            self.last_cycle = result
             return result
 
         bet_dollars = risk_decision.bet_dollars
@@ -214,91 +220,100 @@ class TradingEngine:
         count = max(1, int(bet_dollars / cost_per))
         total_fees = fee_cents * count
 
-        # ── 7. Place order (GTC limit, poll for fills, cancel remainder) ─
-        try:
-            order_resp = self.client.create_order(
-                ticker=market.ticker,
-                side=side,
-                action="buy",
-                count=count,
-                yes_price=price_cents if side == "yes" else None,
-                no_price=price_cents if side == "no" else None,
-                time_in_force="good_till_canceled",
-            )
-            order = order_resp.get("order", {})
-            order_id = order.get("order_id", "unknown")
+        # ── 7. Place order (GTC limit with retry + fill polling) ─────
+        order_resp = None
+        order_id = None
+        for attempt in range(3):
+            try:
+                order_resp = self.client.create_order(
+                    ticker=market.ticker,
+                    side=side,
+                    action="buy",
+                    count=count,
+                    yes_price=price_cents if side == "yes" else None,
+                    no_price=price_cents if side == "no" else None,
+                    time_in_force="good_till_canceled",
+                )
+                order = order_resp.get("order", {})
+                order_id = order.get("order_id", "unknown")
+                break
+            except Exception as e:
+                self._log_activity(
+                    f"Order attempt {attempt+1}/3 failed: {e}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                else:
+                    result["action"] = "order_failed"
+                    result["reason"] = str(e)
+                    self.last_cycle = result
+                    return result
 
-            self._log_activity(
-                f"Order placed: {count}x {side.upper()} @ {price_cents}c -- waiting for fills..."
-            )
+        self._log_activity(
+            f"Order placed: {count}x {side.upper()} @ {price_cents}c -- waiting for fills..."
+        )
 
-            filled = 0
-            poll_deadline = time.time() + 30
-            while time.time() < poll_deadline:
-                await asyncio.sleep(2)
-                try:
-                    status = self.client.get_order(order_id)
-                    order_data = status.get("order", status)
-                    filled = int(order_data.get("count_filled", 0) or 0)
-                    remaining = int(order_data.get("count_remaining", count) or 0)
-                    order_status = order_data.get("status", "")
-                    if filled > 0 or order_status in ("filled", "canceled", "cancelled"):
-                        break
-                except Exception as poll_err:
-                    logger.warning("Poll error: {}", poll_err)
+        filled = 0
+        poll_deadline = time.time() + 5
+        while time.time() < poll_deadline:
+            await asyncio.sleep(1)
+            try:
+                status = self.client.get_order(order_id)
+                order_data = status.get("order", status)
+                filled = int(order_data.get("count_filled", 0) or 0)
+                order_status = order_data.get("status", "")
+                if filled > 0 or order_status in ("filled", "canceled", "cancelled"):
+                    break
+            except Exception as poll_err:
+                logger.warning("Poll error: {}", poll_err)
 
-            if filled < count:
-                try:
-                    self.client.cancel_order(order_id)
+        if filled < count:
+            try:
+                self.client.cancel_order(order_id)
+                if filled > 0:
                     self._log_activity(
                         f"Cancelled remaining {count - filled} unfilled contracts"
                     )
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-            if filled == 0:
-                self._log_activity(
-                    f"0 contracts filled after 30s (requested {count})"
-                )
-                result["action"] = "no_fill"
-                result["reason"] = "0 contracts filled"
-                return result
-
-            actual_cost = round(filled * (price_cents / 100.0), 2)
-            actual_fees = round(fee_cents * filled, 2)
-
+        if filled == 0:
             self._log_activity(
-                f"FILLED: {filled}x {side.upper()} @ {price_cents}c "
-                f"(${actual_cost:.2f}, fee ~{actual_fees:.0f}c)"
+                f"0 contracts filled after 5s (requested {count})"
             )
-
-            self.current_position = {
-                "side": side,
-                "direction": direction,
-                "entry_price": price_cents,
-                "count": filled,
-                "bet_dollars": actual_cost,
-                "order_id": order_id,
-                "entry_time": time.time(),
-            }
-
-            result.update({
-                "action": "traded",
-                "direction": direction,
-                "side": side,
-                "count": filled,
-                "price_cents": price_cents,
-                "order_id": order_id,
-                "bet_dollars": actual_cost,
-                "fees_cents": actual_fees,
-            })
-
-        except Exception as e:
-            logger.error("Order failed: {}", e)
-            result["action"] = "order_failed"
-            result["reason"] = str(e)
-            self._log_activity(f"ORDER FAILED: {e}")
+            result["action"] = "no_fill"
+            result["reason"] = "0 contracts filled"
+            self.last_cycle = result
             return result
+
+        actual_cost = round(filled * (price_cents / 100.0), 2)
+        actual_fees = round(fee_cents * filled, 2)
+
+        self._log_activity(
+            f"FILLED: {filled}x {side.upper()} @ {price_cents}c "
+            f"(${actual_cost:.2f}, fee ~{actual_fees:.0f}c)"
+        )
+
+        self.current_position = {
+            "side": side,
+            "direction": direction,
+            "entry_price": price_cents,
+            "count": filled,
+            "bet_dollars": actual_cost,
+            "order_id": order_id,
+            "entry_time": time.time(),
+        }
+
+        result.update({
+            "action": "traded",
+            "direction": direction,
+            "side": side,
+            "count": filled,
+            "price_cents": price_cents,
+            "order_id": order_id,
+            "bet_dollars": actual_cost,
+            "fees_cents": actual_fees,
+        })
 
         self._last_traded_market = market.ticker
 
