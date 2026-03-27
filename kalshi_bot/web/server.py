@@ -36,7 +36,7 @@ bot_state = {
     "mode": os.getenv("KALSHI_MODE", "demo"),
     "started_at": None,
     "api_key_id": os.getenv("KALSHI_API_KEY_ID", ""),
-    "private_key_path": os.getenv("KALSHI_PRIVATE_KEY_PATH", ""),
+    "private_key": "",
     "activity_log": [],
     "current_position": None,
     "last_cycle": {},
@@ -57,9 +57,16 @@ def _load_settings():
             data = json.loads(SETTINGS_PATH.read_text())
             bot_state["mode"] = data.get("mode", bot_state["mode"])
             bot_state["api_key_id"] = data.get("api_key_id", bot_state["api_key_id"])
-            bot_state["private_key_path"] = data.get(
-                "private_key_path", bot_state["private_key_path"]
+            bot_state["private_key"] = data.get(
+                "private_key", bot_state["private_key"]
             )
+        except Exception:
+            pass
+
+    pk_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+    if pk_path and not bot_state["private_key"]:
+        try:
+            bot_state["private_key"] = Path(pk_path).read_text().strip()
         except Exception:
             pass
 
@@ -68,7 +75,7 @@ def _save_settings():
     SETTINGS_PATH.write_text(json.dumps({
         "mode": bot_state["mode"],
         "api_key_id": bot_state["api_key_id"],
-        "private_key_path": bot_state["private_key_path"],
+        "private_key": bot_state["private_key"],
     }, indent=2))
 
 
@@ -168,9 +175,9 @@ async def _run_bot_loop():
 
     cfg.KALSHI_MODE = bot_state["mode"]
     cfg.KALSHI_API_KEY_ID = bot_state["api_key_id"]
-    cfg.KALSHI_PRIVATE_KEY_PATH = bot_state["private_key_path"]
+    private_key_pem = bot_state["private_key"]
 
-    if not cfg.KALSHI_API_KEY_ID or not cfg.KALSHI_PRIVATE_KEY_PATH:
+    if not cfg.KALSHI_API_KEY_ID or not private_key_pem:
         bot_state["activity_log"].append(
             f"{_ts()} Missing API credentials -- configure in Settings"
         )
@@ -189,7 +196,7 @@ async def _run_bot_loop():
     from kalshi_bot.monitoring.alerts import alert_trade, alert_settlement
 
     try:
-        auth = KalshiAuth(cfg.KALSHI_API_KEY_ID, cfg.KALSHI_PRIVATE_KEY_PATH)
+        auth = KalshiAuth(cfg.KALSHI_API_KEY_ID, private_key_pem)
         client = KalshiClient(auth)
         discovery = MarketDiscovery(client)
         binance = BinanceFeed()
@@ -397,17 +404,19 @@ async def api_btc_prices():
 
 @app.get("/api/settings")
 async def api_settings():
+    pk = bot_state["private_key"]
+    has_key = bool(pk and pk.strip().startswith("-----BEGIN"))
     return {
         "mode": bot_state["mode"],
         "api_key_id": bot_state["api_key_id"],
-        "private_key_path": bot_state["private_key_path"],
+        "has_private_key": has_key,
     }
 
 
 class SettingsUpdate(BaseModel):
     mode: str = "demo"
     api_key_id: str = ""
-    private_key_path: str = ""
+    private_key: str = ""
 
 
 @app.post("/api/settings")
@@ -416,10 +425,10 @@ async def api_settings_update(settings: SettingsUpdate):
         return {"error": "Stop the bot before changing settings"}
     bot_state["mode"] = settings.mode
     bot_state["api_key_id"] = settings.api_key_id
-    bot_state["private_key_path"] = settings.private_key_path
+    if settings.private_key.strip():
+        bot_state["private_key"] = settings.private_key.strip()
     os.environ["KALSHI_MODE"] = settings.mode
     os.environ["KALSHI_API_KEY_ID"] = settings.api_key_id
-    os.environ["KALSHI_PRIVATE_KEY_PATH"] = settings.private_key_path
     _save_settings()
     return {"ok": True}
 

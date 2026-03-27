@@ -26,8 +26,11 @@ class KalshiAuth:
         logger.info("Kalshi auth initialised (key_id={}…)", api_key_id[:12])
 
     @staticmethod
-    def _load_key(path: str):
-        raw = Path(path).read_bytes()
+    def _load_key(key_or_path: str):
+        if key_or_path.strip().startswith("-----BEGIN"):
+            raw = key_or_path.strip().encode()
+        else:
+            raw = Path(key_or_path).read_bytes()
         return serialization.load_pem_private_key(
             raw, password=None, backend=default_backend()
         )

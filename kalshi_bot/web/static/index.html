@@ -108,8 +108,8 @@ td.pending{color:var(--yellow)}
 .modal h2{font-size:16px;font-weight:700;margin-bottom:18px;color:#fff}
 .form-group{margin-bottom:14px}
 .form-group label{display:block;font-size:10px;font-weight:500;color:var(--text-muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.6px}
-.form-group input,.form-group select{width:100%;padding:8px 12px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:var(--mono);outline:none;transition:border-color .12s}
-.form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:8px 12px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:var(--mono);outline:none;transition:border-color .12s}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--accent)}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
 
 /* ── strategy ── */
@@ -233,8 +233,9 @@ td.pending{color:var(--yellow)}
       <input type="text" id="settingApiKey" placeholder="Kalshi API key ID">
     </div>
     <div class="form-group">
-      <label>Private Key Path</label>
-      <input type="text" id="settingKeyPath" placeholder="e.g. ./kalshi-private-key.key">
+      <label>Private Key (PEM)</label>
+      <textarea id="settingPrivateKey" rows="6" placeholder="Paste your private key here&#10;-----BEGIN EC PRIVATE KEY-----&#10;...&#10;-----END EC PRIVATE KEY-----" style="resize:vertical;font-size:11px"></textarea>
+      <div style="font-size:10px;color:var(--text-muted);margin-top:4px" id="keyStatus"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeSettings()">Cancel</button>
@@ -430,13 +431,16 @@ async function openSettings(){
   try{const r=await fetch('/api/settings');const s=await r.json();
     document.getElementById('settingMode').value=s.mode||'demo';
     document.getElementById('settingApiKey').value=s.api_key_id||'';
-    document.getElementById('settingKeyPath').value=s.private_key_path||'';
+    document.getElementById('settingPrivateKey').value='';
+    const ks=document.getElementById('keyStatus');
+    ks.textContent=s.has_private_key?'Private key is saved. Leave blank to keep current key.':'No private key configured.';
+    ks.style.color=s.has_private_key?'var(--green-bright)':'var(--red-bright)';
   }catch(e){}
   document.getElementById('settingsModal').classList.add('open');
 }
 function closeSettings(){document.getElementById('settingsModal').classList.remove('open');}
 async function saveSettings(){
-  const body={mode:document.getElementById('settingMode').value,api_key_id:document.getElementById('settingApiKey').value,private_key_path:document.getElementById('settingKeyPath').value};
+  const body={mode:document.getElementById('settingMode').value,api_key_id:document.getElementById('settingApiKey').value,private_key:document.getElementById('settingPrivateKey').value};
   try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(d.error){alert(d.error);return;}closeSettings();location.reload();}catch(e){alert('Failed');}
 }
 
