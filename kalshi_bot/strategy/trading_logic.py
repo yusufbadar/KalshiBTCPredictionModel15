@@ -214,7 +214,7 @@ class TradingEngine:
         count = max(1, int(bet_dollars / cost_per))
         total_fees = fee_cents * count
 
-        # ── 7. Place order (IOC limit) ──────────────────────────────
+        # ── 7. Place order (GTC limit, poll for fills, cancel remainder) ─
         try:
             order_resp = self.client.create_order(
                 ticker=market.ticker,
@@ -223,17 +223,42 @@ class TradingEngine:
                 count=count,
                 yes_price=price_cents if side == "yes" else None,
                 no_price=price_cents if side == "no" else None,
-                time_in_force="immediate_or_cancel",
+                time_in_force="good_till_canceled",
             )
             order = order_resp.get("order", {})
             order_id = order.get("order_id", "unknown")
 
-            raw_filled = order.get("count_filled")
-            filled = int(raw_filled) if raw_filled is not None else 0
+            self._log_activity(
+                f"Order placed: {count}x {side.upper()} @ {price_cents}c -- waiting for fills..."
+            )
+
+            filled = 0
+            poll_deadline = time.time() + 30
+            while time.time() < poll_deadline:
+                await asyncio.sleep(2)
+                try:
+                    status = self.client.get_order(order_id)
+                    order_data = status.get("order", status)
+                    filled = int(order_data.get("count_filled", 0) or 0)
+                    remaining = int(order_data.get("count_remaining", count) or 0)
+                    order_status = order_data.get("status", "")
+                    if filled > 0 or order_status in ("filled", "canceled", "cancelled"):
+                        break
+                except Exception as poll_err:
+                    logger.warning("Poll error: {}", poll_err)
+
+            if filled < count:
+                try:
+                    self.client.cancel_order(order_id)
+                    self._log_activity(
+                        f"Cancelled remaining {count - filled} unfilled contracts"
+                    )
+                except Exception:
+                    pass
 
             if filled == 0:
                 self._log_activity(
-                    f"Order placed but 0 contracts filled (requested {count})"
+                    f"0 contracts filled after 30s (requested {count})"
                 )
                 result["action"] = "no_fill"
                 result["reason"] = "0 contracts filled"
