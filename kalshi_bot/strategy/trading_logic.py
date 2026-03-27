@@ -106,7 +106,11 @@ class TradingEngine:
                 f"Market: {market.ticker} -- waiting {wait_for_entry:.0f}s "
                 f"for two 5m candles..."
             )
-            await asyncio.sleep(wait_for_entry)
+            waited = 0
+            while waited < wait_for_entry:
+                chunk = min(10, wait_for_entry - waited)
+                await asyncio.sleep(chunk)
+                waited += chunk
 
         # Refresh after wait
         market = self.discovery.get_current_market()

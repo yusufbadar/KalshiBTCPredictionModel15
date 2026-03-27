@@ -210,19 +210,37 @@ async def _run_bot_loop():
             risk_mgr, trade_logger, analyzer,
         )
 
-        bot_state["activity_log"].append(f"{_ts()} Connecting to Binance...")
+        async def _periodic_sync():
+            while bot_state["running"]:
+                try:
+                    bot_state["balance"] = client.get_balance_dollars()
+                    m = discovery.get_current_market()
+                    bot_state["market_ticker"] = m.ticker if m else ""
+                    bot_state["seconds_to_close"] = (
+                        m.seconds_until_close if m else 0
+                    )
+                except Exception:
+                    pass
+                await _sync_engine_state(engine)
+                await asyncio.sleep(5)
+
+        engine._log_activity("Connecting to Binance...")
+        await _sync_engine_state(engine)
         if not await binance.connect():
-            bot_state["activity_log"].append(f"{_ts()} Binance connection failed")
+            engine._log_activity("Binance connection failed")
+            await _sync_engine_state(engine)
             bot_state["running"] = False
             return
 
         bot_state["balance"] = client.get_balance_dollars()
-        bot_state["activity_log"].append(
-            f"{_ts()} Bot started in {cfg.KALSHI_MODE.upper()} mode "
+        engine._log_activity(
+            f"Bot started in {cfg.KALSHI_MODE.upper()} mode "
             f"(balance: ${bot_state['balance']:.2f})"
         )
+        await _sync_engine_state(engine)
 
         last_traded_market = None
+        sync_task = asyncio.create_task(_periodic_sync())
 
         while bot_state["running"]:
             try:
@@ -294,6 +312,7 @@ async def _run_bot_loop():
                 bot_state["activity_log"].append(f"{_ts()} ERROR: {e}")
                 await asyncio.sleep(10)
 
+        sync_task.cancel()
         await binance.close()
         client.close()
 
@@ -307,6 +326,24 @@ async def _run_bot_loop():
 
 def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+
+async def _sync_engine_state(engine):
+    bot_state["activity_log"] = engine.activity_log[-30:]
+    bot_state["last_cycle"] = engine.last_cycle
+    if engine.current_position:
+        pos = engine.current_position
+        bot_state["current_position"] = {
+            "direction": pos["direction"],
+            "side": pos["side"],
+            "entry_price": pos["entry_price"],
+            "count": pos["count"],
+            "bet_dollars": pos["bet_dollars"],
+            "hold_seconds": time.time() - pos["entry_time"],
+        }
+    else:
+        bot_state["current_position"] = None
+    await _broadcast_state()
 
 
 async def _broadcast_state():
