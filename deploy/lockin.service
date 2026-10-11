@@ -1,0 +1,41 @@
+# systemd unit for the Lock-In bot (installed by deploy/setup.sh).
+# The dashboard listens on this machine only; reach it through an SSH tunnel:
+#     ssh -N -L 8000:127.0.0.1:8000 root@YOUR_SERVER
+# To listen on another address (e.g. a Tailscale IP) set a dashboard password
+# first, then:  systemctl edit lockin  ->  [Service]  Environment=LOCKIN_HOST=100.x.y.z
+[Unit]
+Description=Lock-In Kalshi bot (dashboard + trading engine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lockin
+Group=lockin
+WorkingDirectory=/opt/lockin
+Environment=LOCKIN_HOST=127.0.0.1
+Environment=LOCKIN_PORT=8000
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# --autostart: after a reboot or crash the bot resumes if it was running
+# (a bot you stopped, or an engaged kill switch, stays as you left it)
+ExecStart=/opt/lockin/.venv/bin/python -m kalshi_bot --host ${LOCKIN_HOST} --port ${LOCKIN_PORT} --autostart
+Restart=always
+RestartSec=5
+# stop = cancel resting orders, then exit
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# The service can read its code but only write its own data and key folders.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lockin/storage /opt/lockin/secrets
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# Runtime only (what a server needs to run the bot and its dashboard).
+# The full list for research and tests is requirements.txt.
+httpx>=0.27
+websockets>=13.0
+cryptography>=42.0
+python-dotenv>=1.0
+loguru>=0.7
+numpy>=1.26
+scipy>=1.11
+pandas>=2.1
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.0
