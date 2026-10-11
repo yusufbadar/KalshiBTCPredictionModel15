@@ -614,6 +614,49 @@ def stress(b: dict) -> None:
     s.save("stress-tests.svg")
 
 
+# --------------------------------------------------------------------------- how it is built
+def architecture() -> None:
+    s = frame(480, "How the bot is built: prices come in from Kalshi, a model works out the odds, five checks decide "
+                   "whether to buy, risk limits size the order, and the order goes back to Kalshi. Every step is "
+                   "recorded in a trade log and shown on the dashboard.",
+              "Under the hood", "From a price to an order",
+              "The same rule runs in the research replay and in the live bot, and a test fails if they disagree.")
+    s.rect(48, 172, 1104, 46, stroke=HI, sw=2, rx=12)
+    s.text(W / 2, 202, "KALSHI EXCHANGE", size=16, weight=700, fill=HI, anchor="middle", mono=True, ls=3)
+    steps = (("PRICE FEED", "one Bitcoin price", "every second"), ("MODEL", "the odds that", "each side wins"),
+             ("FIVE CHECKS", "buy only if", "all five pass"), ("RISK LIMITS", "size the order", "to the account"),
+             ("ORDER", "buy now", "or cancel"))
+    gap, y, hgt = 28, 268, 96
+    bw = (1104 - 4 * gap) / 5
+
+    def arrow(x1, y1, x2, y2, dash=None):
+        s.line(x1, y1, x2, y2, stroke=HI if not dash else DIM, sw=2, dash=dash)
+        if dash:
+            return
+        dx, dy = (x2 > x1) - (x2 < x1), (y2 > y1) - (y2 < y1)
+        s.path(f"M{x2},{y2} L{x2 - 9 * dx - 6 * dy},{y2 - 9 * dy - 6 * dx} L{x2 - 9 * dx + 6 * dy},{y2 - 9 * dy + 6 * dx} Z",
+               fill=HI, stroke=HI, sw=1)
+
+    for i, (head, l1, l2) in enumerate(steps):
+        x = 48 + i * (bw + gap)
+        s.rect(x, y, bw, hgt, fill=PANEL, stroke=LINE2, rx=14)
+        s.text(x + 18, y + 32, head, size=14.5, fill=MUTED, weight=700, mono=True, ls=1.8)
+        s.text(x + 18, y + 60, l1, size=18, fill=HI, weight=600)
+        s.text(x + 18, y + 82, l2, size=18, fill=HI, weight=600)
+        if i < 4:
+            arrow(x + bw + 4, y + hgt / 2, x + bw + gap - 3, y + hgt / 2)
+        arrow(x + bw / 2, y + hgt, x + bw / 2, 410, dash="4 6")
+    cx1, cx5 = 48 + bw / 2, 48 + 4 * (bw + gap) + bw / 2
+    arrow(cx1, 218, cx1, y - 3)
+    s.text(cx1 + 14, 249, "prices", size=15.5, fill=MUTED, mono=True)
+    arrow(cx5, y, cx5, 221)
+    s.text(cx5 - 14, 249, "orders", size=15.5, fill=MUTED, anchor="end", mono=True)
+    s.rect(48, 410, 1104, 46, fill=HI, rx=12)
+    s.text(W / 2, 440, "TRADE LOG + DASHBOARD: every step is recorded and shown live", size=16, weight=700, fill="#000",
+           anchor="middle", mono=True, ls=0.8)
+    s.save("architecture.svg")
+
+
 # --------------------------------------------------------------------------- story
 def story() -> None:
     s = frame(400, "Timeline: March 2026 candle-pattern bot scrapped; 27 September lock-in rules frozen; "
@@ -659,6 +702,7 @@ def main() -> None:
     server()
     calibration(b)
     stress(b)
+    architecture()
     story()
     sm, sh = b["summary"], hr["summary"]
     facts["15m"] = {k: sm[k] for k in ("markets", "pnl", "market_win_rate", "win_rate", "pnl_per_contract_c", "fees",

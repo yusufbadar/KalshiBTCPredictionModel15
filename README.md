@@ -226,24 +226,9 @@ Step-by-step guide: [deploy/README.md](deploy/README.md).
 
 ## How it is built
 
-```mermaid
-flowchart LR
-    K(["Kalshi"])
-    subgraph BOT["Lock-In"]
-        direction LR
-        F["Price feed<br>one price a second"] --> M["Model<br>odds for each side"]
-        M --> C{"Five checks"}
-        C -- "all yes" --> R["Risk limits<br>size the order"]
-        C -. "any no" .-> W["Wait"]
-        R --> O["Order<br>buy now or cancel"]
-        O --> L[("Trade log")]
-    end
-    K -- "prices" --> F
-    O -- "orders" --> K
-    L --> D["Dashboard"]
-```
+<img src="docs/img/architecture.svg" width="100%" alt="How the bot is built. Prices come in from Kalshi to the price feed. A model works out the odds that each side wins. Five checks decide whether to buy. Risk limits size the order. The order goes back to Kalshi. Every step is recorded in a trade log and shown on the dashboard.">
 
-The research code and the live bot share the same rule, and a test fails if they ever disagree: the live strategy must reproduce at least 99% of the backtest's own trades.
+The research code and the live bot share one rule. A test replays the backtest's own trades through the live strategy and fails unless at least 99% of them match.
 
 <details>
 <summary><b>Project layout</b></summary>
