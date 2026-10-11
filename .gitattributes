@@ -1,0 +1,10 @@
+# Text files are stored with LF line endings in the repository
+* text=auto
+
+# These run on Linux servers and break with Windows line endings
+*.sh       text eol=lf
+*.service  text eol=lf
+
+# Images
+*.png  binary
+*.svg  text eol=lf

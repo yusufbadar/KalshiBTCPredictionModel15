@@ -1,2 +1,2 @@
-"""Kalshi BTC 15-Minute Self-Learning Trading Bot."""
-__version__ = "1.0.0"
+"""KXBTC15M: research-driven trading bot for Kalshi's 15-minute Bitcoin markets."""
+__version__ = "2.0.0"

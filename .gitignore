@@ -1,63 +1,29 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 *.egg-info/
-dist/
-build/
-*.egg
-
-# Environment
-.env
-venv/
 .venv/
-env/
+venv/
+.pytest_cache/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Bot runtime data
-kalshi_bot/storage/logs/
-kalshi_bot/storage/models/
-kalshi_bot/storage/trades.jsonl
-
-# Old files (not part of this project)
-bot.py
-15m_bot_runner.py
-redis_control.py
-patch_gamma_markets.py
-patch_market_orders.py
-test.py
-view_paper_trades.py
-core/
-data_sources/
-execution/
-feedback/
-monitoring/
-grafana/
-requirements.txt.bak
-
-# Old requirements (renamed to requirements.txt)
-requirements_kalshi.txt
-
-# Private keys and secrets
+# Secrets - never commit
+.env
+/secrets/
 *.key
 *.pem
-kalshi-private-key.key
 
-# Web dashboard runtime settings (may contain API key references)
-kalshi_bot/storage/data/web_settings.json
-
-# Misc
+# Runtime state, downloaded market data, backups (top-level folders only)
+/storage/
+/data/
+_backup_*.zip
 *.log
-*.pkl
+
+# IDE / OS / local tooling
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# Server upload bundle (built by deploy/make_bundle.py)
+lockin-server.zip
