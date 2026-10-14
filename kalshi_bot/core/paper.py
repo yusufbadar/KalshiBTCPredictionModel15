@@ -2,8 +2,11 @@
 Paper trading against *production* KXBTC15M market data (public endpoints,
 no orders sent anywhere).
 
-* ``ProductionFeed`` polls the production order book (~2 Hz) and public trade
-  tape (~1 Hz) for the current contract.
+* ``ProductionFeed`` polls the production order books (2-4 Hz) and the public
+  trade tape of every watched contract: the primary one on every pass near a
+  close, the others in turn. Polled trades reach the bot a fraction of a second
+  late, so in paper mode the strategy's "market moved first" checks are less
+  sharp than in demo/live, where every trade is pushed over the WebSocket.
 * ``PaperBroker`` fills simulated orders conservatively:
     - IOC/FOK orders walk the most recent production book snapshot after a
       latency delay (only displayed size, never better than the book);
@@ -29,9 +32,9 @@ PAPER_LATENCY_S = 0.15
 
 
 class ProductionFeed:
-    """Polls production books (and the primary contract's trade tape) for the
-    tickers the engine is watching. Several books are fetched in one batch
-    request so watching an hourly strike ladder stays within rate limits."""
+    """Polls production books and trade tapes for the tickers the engine is
+    watching. Several books are fetched in one batch request so watching an
+    hourly strike ladder stays within rate limits."""
 
     def __init__(self, public: KalshiREST):
         self.public = public
@@ -56,6 +59,7 @@ class ProductionFeed:
 
     async def run(self) -> None:
         last_trades = 0.0
+        turn = 0
         while True:
             tks = list(self.tickers)
             if tks:
@@ -73,9 +77,15 @@ class ProductionFeed:
                                     b.apply_snapshot_rest(item.get("orderbook_fp") or item.get("orderbook") or {})
                 except Exception as e:  # noqa: BLE001
                     logger.debug("paper book poll failed: {}", e)
-                if self.ticker and time.time() - last_trades > 1.0:
+                # trade tape: the primary contract on every pass near a close, once a
+                # second otherwise; one of the other contracts per pass, in turn
+                if self.ticker and (self.poll_interval <= 0.3 or time.time() - last_trades > 1.0):
                     last_trades = time.time()
                     await self._poll_trades(self.ticker)
+                others = [t for t in tks if t != self.ticker]
+                if others:
+                    turn = (turn + 1) % len(others)
+                    await self._poll_trades(others[turn])
             await asyncio.sleep(self.poll_interval)
 
     async def _poll_trades(self, tk: str) -> None:

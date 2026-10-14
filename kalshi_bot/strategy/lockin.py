@@ -13,6 +13,15 @@ an immediate-or-cancel order capped at the break-even-plus-edge price.
 distance from the strike: live trading (Oct 2026) and the backtest agree
 that small early leads are where single-second index jumps do the damage.
 The hourly strike ladder is not affected by either rule.
+
+Two "the market moved first" checks apply to every market. Kalshi's traders
+react to a jump in the underlying price up to a second before the index value
+this bot reads shows it, so right after a jump the model still calls the old
+favourite and its collapsed price looks like a bargain. The bot does not buy
+while (a) the favourite traded, or was bid, much higher a moment ago or (b) a
+rush of selling has just hit it, nor for one more second after the warning
+has passed; it looks again on every pass, and by then the index has caught up
+(see RESEARCH.md section 8).
 """
 from __future__ import annotations
 
@@ -44,11 +53,47 @@ def max_price_for_edge(p_win: float, min_edge: float) -> float:
     return lo
 
 
+def model_sigma(sigma: float, x: float, seconds_left: float, p: StrategyParams) -> float:
+    """Volatility handed to the model: the live estimate (floored), times the
+    safety factor, times extra caution early in the averaging window."""
+    sig = max(sigma, p.vol_floor_rel * (x or 0.0)) * p.sigma_scale
+    if p.sigma_time_k > 0:
+        sig *= 1.0 + p.sigma_time_k * max(0.0, (seconds_left - 30.0) / 30.0)
+    return sig
+
+
+def market_moved_first(p: StrategyParams, tape, ticker: str, yes_fav: bool, best: float, now: float) -> str:
+    """The two checks. Returns '' when it is fine to buy, otherwise the reason
+    to wait. ``best`` is the price the favourite can be bought at right now."""
+    if tape is None:
+        return ""
+    if p.fall_guard > 0:
+        hi = tape.high(ticker, yes_fav, now, p.fall_window_s)
+        if hi is not None and hi - best > p.fall_guard + 1e-9:
+            return (f"its price just fell {100 * (hi - best):.0f}c (it traded at {100 * hi:.0f}c "
+                    f"within the last {p.fall_window_s:g}s)")
+    if p.sell_guard_x > 0:
+        sold = tape.sold(ticker, yes_fav, now, p.sell_window_s)
+        if sold > 0:
+            normal = max(tape.per_second(ticker, now, p.sell_base_s + 1.0, 1.0), p.sell_base_floor)
+            if sold > p.sell_guard_x * normal + 1e-9:
+                return (f"a rush of selling just hit it ({sold:,.0f} contracts in {p.sell_window_s:g}s, "
+                        f"{sold / normal:.1f}x a normal second)")
+    return ""
+
+
 class LockInStrategy:
     def __init__(self, p: StrategyParams):
         self.p = p
         self.note = ""
         self._last_order: dict[str, float] = {}
+        self.waited: dict[str, tuple[float, str]] = {}      # ticker -> (time, reason) of the last "market moved first" wait
+
+    def not_sent(self, ticker: str) -> None:
+        """The engine dropped the buy this strategy just asked for (missing
+        data, not a rejection by the exchange): the order cooldown should not
+        run, so the buy can go out as soon as the reason is gone."""
+        self._last_order.pop(ticker, None)
 
     def decide(self, st: TickState) -> list[Intent]:
         p = self.p
@@ -108,6 +153,20 @@ class LockInStrategy:
                          f"(edge {100 * edge_now:.1f}c < {100 * p.min_edge:.0f}c)")
             return []
         tk = st.contract.ticker
+        # the market moved first: a price that has just dropped, or a rush of selling, means other
+        # traders are reacting to something the index has not shown yet - do not buy, look again
+        why = market_moved_first(p, st.tape, tk, yes_fav, best, st.now)
+        if why:
+            self.waited[tk] = (st.now, why)
+            self.note = f"model {100 * p_fav:.1f}% {outcome.upper()} at {100 * best:.0f}c, but {why} — waiting"
+            return []
+        # ... and for a moment after the warning has passed: the index needs about a second to show
+        # what the market reacted to, and prices often bounce before it does
+        last = self.waited.get(tk)
+        if last is not None and 0.0 <= st.now - last[0] < p.guard_hold_s:
+            self.note = (f"model {100 * p_fav:.1f}% {outcome.upper()} at {100 * best:.0f}c — letting the index catch up "
+                         f"for {p.guard_hold_s - (st.now - last[0]):.1f}s more ({last[1]})")
+            return []
         if st.now - self._last_order.get(tk, 0.0) < p.cooldown_s:
             self.note = "cooldown"
             return []

@@ -83,9 +83,10 @@ PUBLIC_REST = ENDPOINTS["live"]["rest"]
 WS_PATH = "/trade-api/ws/v2"
 
 
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 # strategy fields whose validated values changed in a settings version: settings
 # saved by an older version adopt the new value of exactly these fields
+# (version 4 only added the "market moved first" checks, which arrive as defaults)
 _STRATEGY_RESETS = {2: ("min_edge", "sigma_time_k"),
                     3: ("max_seconds_left",)}          # 15-minute markets: final 60 s -> final 55 s
 
@@ -119,6 +120,20 @@ class StrategyParams:
     min_edge: float = 0.01               # model prob - price - fee, per contract
     max_price: float = 0.99
     cooldown_s: float = 0.5
+    # "the market moved first" checks (RESEARCH.md section 8). Kalshi's price
+    # reacts to a jump in Bitcoin up to a second before the index value this
+    # bot reads does, so a favourite that suddenly looks cheap is usually a
+    # stale reading, not a bargain. While either check fires, and for
+    # `guard_hold_s` after it last did, the bot does not buy that market; it
+    # looks again on every pass. 0 switches a check off.
+    fall_guard: float = 0.10             # the side traded more than this many dollars higher ...
+    fall_window_s: float = 1.0           # ... within the last N seconds
+    sell_guard_x: float = 1.0            # contracts sold against the side in the last ...
+    sell_window_s: float = 0.5           # ... N seconds exceed this multiple of a normal second, where
+    sell_base_s: float = 10.0            # a normal second = the average over this many seconds, ending 1 s ago,
+    sell_base_floor: float = 50.0        # and never less than this many contracts
+    guard_hold_s: float = 1.0            # stay out this long after a check last fired: the index needs about
+                                         # a second to catch up (without it the checks do half the good)
     # sizing
     max_contracts_per_order: float = 50.0
     edge_size_max: float = 3.0           # scale orders up to 3x on edges >= 3x min_edge

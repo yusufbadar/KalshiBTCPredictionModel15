@@ -25,6 +25,7 @@ class TickState:
     no_qty: float
     working: list = field(default_factory=list)
     balance: float = 0.0
+    tape: Any = None            # core.tape.TradeTape: recent public trades (None = no trade data)
 
 
 @dataclass

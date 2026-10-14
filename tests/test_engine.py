@@ -220,6 +220,9 @@ class FakeWS:
     async def update(self, name, action, **params):
         self.updates.append((name, action, params))
 
+    def subscribed(self, name):
+        return self.connected.is_set()
+
     async def unsubscribe(self, name):
         pass
 

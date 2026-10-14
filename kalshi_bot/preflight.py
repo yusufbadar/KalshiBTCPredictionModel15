@@ -29,21 +29,35 @@ def _check(name: str, level: str, detail: str) -> dict:
     return {"name": name, "level": level, "ok": level != "fail", "detail": detail}
 
 
-async def _feed_check(url: str, signer: Signer, index_ids: list[str], wait_s: float = 7.0) -> dict:
+async def _feed_check(url: str, signer: Signer, index_ids: list[str], wait_s: float = 7.0,
+                      trade_tickers: list[str] | None = None, trade: dict | None = None) -> dict:
     """Connect to the WebSocket and wait for one tick per index. Returns
-    {index_id: (value, local_minus_exchange_seconds)}."""
+    {index_id: (value, local_minus_exchange_seconds)}. With ``trade_tickers``
+    it also subscribes to their public trades and records in ``trade`` whether
+    the exchange accepted that subscription."""
     got: dict[str, tuple[float, float]] = {}
+    want_trade = bool(trade_tickers) and trade is not None
     async with websockets.connect(url, additional_headers=signer.headers("GET", WS_PATH),
                                   open_timeout=10, close_timeout=2) as ws:
         await ws.send(json.dumps({"id": 1, "cmd": "subscribe",
                                   "params": {"channels": ["cfbenchmarks_value"], "index_ids": index_ids}}))
+        if want_trade:
+            await ws.send(json.dumps({"id": 2, "cmd": "subscribe",
+                                      "params": {"channels": ["trade"], "market_tickers": trade_tickers}}))
         t0 = time.time()
-        while time.time() - t0 < wait_s and len(got) < len(index_ids):
+        while time.time() - t0 < wait_s and (len(got) < len(index_ids) or (want_trade and "ok" not in trade)):
             try:
                 raw = await asyncio.wait_for(ws.recv(), 2.0)
             except asyncio.TimeoutError:
                 continue
             m = json.loads(raw)
+            if want_trade and m.get("id") == 2 and m.get("type") in ("subscribed", "error"):
+                trade["ok"] = m["type"] == "subscribed"
+                trade["detail"] = "" if trade["ok"] else str((m.get("msg") or {}).get("msg") or m.get("msg"))
+                continue
+            if want_trade and m.get("type") == "trade":
+                trade["seen"] = trade.get("seen", 0) + 1
+                continue
             if m.get("type") != "cfbenchmarks_value":
                 continue
             mm = m.get("msg", {})
@@ -112,6 +126,7 @@ async def run_preflight(s: Settings, running: bool = False) -> dict:
 
         # markets the bot would trade
         market_rest = KalshiREST(ENDPOINTS["live"]["rest"], None) if s.env == "paper" else rest
+        tickers: list[str] = []
         try:
             now = time.time()
             for sp in specs:
@@ -128,6 +143,7 @@ async def run_preflight(s: Settings, running: bool = False) -> dict:
                             live.append((c, m))
                     if live:
                         c, m = min(live, key=lambda t: t[0])
+                        tickers.append(m["ticker"])
                         add(f"{sp.symbol} market", "ok", f"{m['ticker']} - strike {m.get('floor_strike')}, "
                                                          f"closes in {c - now:.0f}s")
                     else:
@@ -138,10 +154,14 @@ async def run_preflight(s: Settings, running: bool = False) -> dict:
             if market_rest is not rest:
                 await market_rest.close()
 
-        # settlement-index feed + clock
+        # settlement-index feed + clock (+ the public trade stream the bot's
+        # price-fall and selling checks read; in paper mode that comes from polling)
+        guards = s.strategy.fall_guard > 0 or s.strategy.sell_guard_x > 0
+        trade: dict = {}
         try:
             ids = [sp.index_id for sp in specs]
-            got = await _feed_check(ENDPOINTS[exch]["ws"], signer, ids)
+            got = await _feed_check(ENDPOINTS[exch]["ws"], signer, ids,
+                                    trade_tickers=tickers if (guards and s.env != "paper") else None, trade=trade)
             missing = [i for i in ids if i not in got]
             if missing:
                 add("Price feed", "fail", f"No ticks received for {', '.join(missing)} in 7 s")
@@ -155,6 +175,25 @@ async def run_preflight(s: Settings, running: bool = False) -> dict:
                                                     " - large gap: turn on automatic time sync in Windows"))
         except Exception as e:  # noqa: BLE001
             add("Price feed", "fail", f"Could not connect to the live feed: {e}")
+        if guards and tickers:
+            if s.env == "paper":
+                try:
+                    pub = KalshiREST(ENDPOINTS["live"]["rest"], None)
+                    try:
+                        d = await pub.get("/markets/trades", {"ticker": tickers[0], "limit": 1}, auth=False)
+                    finally:
+                        await pub.close()
+                    add("Trade feed", "ok", "Public trade tape reachable (polled in paper mode, a fraction of a "
+                                            f"second behind){'' if d.get('trades') else ' - no trades in this market yet'}")
+                except Exception as e:  # noqa: BLE001
+                    add("Trade feed", "fail", f"Could not read the public trade tape: {e}")
+            elif trade.get("ok"):
+                add("Trade feed", "ok", "Live trade stream subscribed (used by the price-fall and selling checks)")
+            else:
+                add("Trade feed", "fail", "The exchange did not confirm the public trade stream"
+                    + (f" ({trade['detail']})" if trade.get("detail") else "")
+                    + " - the bot will not buy without it. Run the check again; if it persists, set both checks "
+                      "to 0 in Settings to trade without them.")
     finally:
         await rest.close()
 
@@ -177,7 +216,12 @@ async def run_preflight(s: Settings, running: bool = False) -> dict:
         (f"Trading ON - {', '.join(x.symbol for x in specs)}; final {sp_.max_seconds_left:.0f}s"
          f"{f' (lead >= {sp_.early_cushion_bp:g} bp while > {sp_.early_seconds:.0f}s left)' if sp_.early_cushion_bp > 0 else ''}, "
          f"model >= {100 * sp_.p_min:.0f}%, z >= {sp_.z_min:g}, edge >= {100 * sp_.min_edge:g}c"
-         + (", hourly BTC strikes" if sp_.trade_hourly else ""))
+         + (", hourly BTC strikes" if sp_.trade_hourly else "")
+         + ("; waits when the price just fell or a rush of selling hits"
+            if sp_.fall_guard > 0 and sp_.sell_guard_x > 0 else
+            "; waits when the price just fell" if sp_.fall_guard > 0 else
+            "; waits when a rush of selling hits" if sp_.sell_guard_x > 0 else
+            "; price-fall and selling checks are OFF"))
         if sp_.enabled else "Trading is switched OFF in Settings (the bot will only watch)")
     if running:
         add("Bot", "ok", "The bot is running")

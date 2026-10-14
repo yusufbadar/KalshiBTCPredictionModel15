@@ -51,6 +51,11 @@ class KalshiWS:
         if self._ws is not None and self.connected.is_set():
             await self._send_sub(name)
 
+    def subscribed(self, name: str) -> bool:
+        """True once the exchange has acknowledged this subscription on the
+        current connection."""
+        return self.connected.is_set() and name in self._sid_by_name
+
     async def unsubscribe(self, name: str) -> None:
         self._subs.pop(name, None)
         sid = self._sid_by_name.pop(name, None)

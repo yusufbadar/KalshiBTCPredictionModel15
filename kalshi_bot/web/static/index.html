@@ -158,6 +158,7 @@ h4{margin:16px 0 8px;font-size:11px;font-weight:700;color:var(--muted);text-tran
         <div class="row"><span class="l">Distance to strike</span><span class="num" id="mDist">—</span></div>
         <div class="row"><span class="l">Volatility</span><span class="num" id="mSig">—</span></div>
         <div class="row"><span class="l">Index feed</span><span class="num" id="mFeed">—</span></div>
+        <div class="row"><span class="l">Trade feed</span><span class="num" id="mTape">—</span></div>
       </div>
     </div>
     <div class="card c4">
@@ -375,6 +376,7 @@ function renderLive(){
   $('mDist').textContent=(idx.value&&m&&m.strike)?(fmtS$(idx.value-m.strike,pxd(idx.value))+' · '+(1e4*(idx.value-m.strike)/m.strike).toFixed(1)+' bp'):'—';
   $('mSig').textContent=idx.sigma_bp!=null?(idx.sigma_bp.toFixed(2)+' bp/√s · '+(idx.sigma_bp*0.3).toFixed(2)+'% per 15m'+(idx.vol_ready?'':' · warming up')):'—';
   $('mFeed').textContent=idx.age!=null?((idx.age<2?'live':'STALE '+idx.age.toFixed(1)+'s')+' · '+(idx.latency_ms||0).toFixed(0)+' ms'):'—';
+  const tp=a.tape; $('mTape').textContent=tp?(tp.ok?('live · '+Math.round(tp.last_10s||0).toLocaleString()+' contracts in 10s'):'not confirmed — not buying'):'—';
   const p=d.p_model; const pf=v=>v<0.001?'<0.1%':v>0.999?'>99.9%':(100*v).toFixed(1)+'%';
   $('pModel').textContent=p!=null?pf(p):'—';
   const bid=m?m.bid:null, ask=m?m.ask:null;
@@ -505,7 +507,7 @@ function setEnv(e){envSel=e;document.querySelectorAll('#envSeg button').forEach(
 document.querySelectorAll('#envSeg button').forEach(b=>b.onclick=()=>setEnv(b.dataset.env));
 const RISK=[['pct_per_market','Max % of account per contract','pct'],['pct_per_close','Max % per settlement moment','pct'],['daily_loss_pct','Daily loss stop (% of account)','pct'],['max_drawdown_pct','Drawdown stop (% below peak)','pct'],
  ['max_notional_per_market','Hard cap $ per contract'],['max_notional_per_close','Hard cap $ per settlement moment'],['max_daily_loss','Hard cap daily loss ($)'],['min_balance','Keep minimum cash ($)'],['stale_index_s','Stale index cutoff (s)']];
-const STRAT=[['enabled','Trading enabled','bool'],['assets','Coins (only BTC is validated)','assets'],['max_seconds_left','15-min markets: act in final N s'],['hourly_max_seconds_left','Hourly strikes: act in final N s'],['early_cushion_bp','15-min: lead needed early (bp, 1 bp ≈ $8)'],['early_seconds','… while more than N s remain'],['p_min','Min model probability'],['z_min','Min z-score vs strike'],['min_edge','Min edge per contract ($)'],['max_price','Max price paid'],['sigma_scale','Volatility safety factor'],['sigma_time_k','Extra caution early in window'],['max_contracts_per_order','Base contracts / order'],['edge_size_max','Size up to N× on big edges'],['max_position_per_market','Max contracts / market'],['trade_hourly','Also trade hourly BTC strikes','bool'],['hourly_band','Hourly strikes within $ of BTC']];
+const STRAT=[['enabled','Trading enabled','bool'],['assets','Coins (only BTC is validated)','assets'],['max_seconds_left','15-min markets: act in final N s'],['hourly_max_seconds_left','Hourly strikes: act in final N s'],['early_cushion_bp','15-min: lead needed early (bp, 1 bp ≈ $8)'],['early_seconds','… while more than N s remain'],['p_min','Min model probability'],['z_min','Min z-score vs strike'],['min_edge','Min edge per contract ($)'],['max_price','Max price paid'],['fall_guard','Wait if its price fell more than this ($) in the last second (0 = off)'],['sell_guard_x','Wait if selling in the last half second exceeds N× a normal second (0 = off)'],['sigma_scale','Volatility safety factor'],['sigma_time_k','Extra caution early in window'],['max_contracts_per_order','Base contracts / order'],['edge_size_max','Size up to N× on big edges'],['max_position_per_market','Max contracts / market'],['trade_hourly','Also trade hourly BTC strikes','bool'],['hourly_band','Hourly strikes within $ of BTC']];
 function fieldHtml(prefix,[k,l,t],v){if(t==='bool')return `<div class="f"><label>${l}</label><select id="${prefix}_${k}"><option value="true" ${v?'selected':''}>On</option><option value="false" ${!v?'selected':''}>Off</option></select></div>`;
   if(t==='assets'){const on=String(v||'BTC').split(',');return `<div class="f"><label>${l}</label><div class="chk" id="${prefix}_${k}">${(settings.asset_choices||['BTC']).map(c=>`<label><input type="checkbox" value="${c}" ${on.includes(c)?'checked':''}>${c}</label>`).join('')}</div></div>`;}
   if(t==='pct')return `<div class="f"><label>${l}</label><input id="${prefix}_${k}" value="${+(100*v).toFixed(4)}" inputmode="decimal"></div>`;

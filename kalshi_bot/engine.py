@@ -2,7 +2,7 @@
 Live trading engine (demo / paper / live).
 
 One asyncio task graph:
-    ws.run()          settlement-index feeds (+ order books, fills, orders on demo/live)
+    ws.run()          settlement-index feeds (+ order books, public trades, fills, orders on demo/live)
     feed.run()        production book/trade polling (paper only)
     _loop()           decision loop (10 Hz near a close, 4 Hz otherwise)
     _housekeeping()   balances, settlements, reconciliation, equity samples
@@ -35,11 +35,12 @@ from kalshi_bot.core.orderbook import OrderBook
 from kalshi_bot.core.orders import KalshiBroker, OrderManager
 from kalshi_bot.core.paper import PaperBroker, ProductionFeed
 from kalshi_bot.core.risk import RiskManager, utc_day_start
+from kalshi_bot.core.tape import TradeTape
 from kalshi_bot.model.fair_value import fair_yes, window_bounds
 from kalshi_bot.model.vol import EwmaVol
 from kalshi_bot.research.dataset import reconstruct_prints
 from kalshi_bot.strategy.base import Intent, TickState
-from kalshi_bot.strategy.lockin import LockInStrategy
+from kalshi_bot.strategy.lockin import LockInStrategy, model_sigma
 
 CRYPTO_SHARD = 2
 VOL_INIT_REL = 7e-5          # unseeded sigma: 0.7 bp of price per sqrt(s), ~3x a normal BTC level
@@ -79,6 +80,7 @@ class Engine:
         self.balance = 0.0
         self.balance_by_shard: dict[int, float] = {}
         self.books: dict[str, OrderBook] = {}
+        self.tape = TradeTape()                      # recent public trades, for the "market moved first" checks
         self.logs: deque = deque(maxlen=300)
         self.settled: set[str] = set()
         self._tasks: list[asyncio.Task] = []
@@ -99,6 +101,8 @@ class Engine:
         self._drawdown = 0.0
         self._dd_logged = False
         self._topup_fails = 0
+        self._tape_warned = False
+        self._wait_logged: set[str] = set()          # markets where a "market moved first" wait was already logged
         self._lock = InstanceLock(STORAGE_DIR / f"engine_{self.env}.lock")
 
     # ------------------------------------------- single-coin compatibility
@@ -192,6 +196,7 @@ class Engine:
         if paper:
             self.feed = ProductionFeed(self.public)
             self.books = self.feed.books
+            self.feed.trade_listeners.append(self._on_feed_trades)
             broker = PaperBroker(self.feed, clock=self.index.exchange_time)
             self.om = OrderManager(broker, self.ledger, self.env)
             broker.om = self.om
@@ -199,6 +204,7 @@ class Engine:
             self.om = OrderManager(KalshiBroker(self.rest), self.ledger, self.env)
             self.ws.on("orderbook_snapshot", self._on_book_snapshot)
             self.ws.on("orderbook_delta", self._on_book_delta)
+            self.ws.on("trade", self._on_trade)
             self.ws.on("fill", lambda m: self.om.on_ws_fill(m))
             self.ws.on("user_order", lambda m: self.om.on_ws_order(m))
             self.ws.on_reconnect(self._on_ws_reconnect)
@@ -299,6 +305,41 @@ class Engine:
             return
         b.seq = seq
         b.apply_delta_ws(m)
+
+    def _on_trade(self, msg: dict) -> None:
+        """One public trade from the WebSocket ``trade`` channel."""
+        m = msg.get("msg") or {}
+        if m.get("is_block_trade"):
+            return                                   # negotiated away from the book: says nothing about it
+        tk = m.get("market_ticker")
+        side = m.get("taker_outcome_side") or m.get("taker_side")
+        if not tk or side not in ("yes", "no"):
+            return
+        try:
+            px = float(m["yes_price_dollars"]) if m.get("yes_price_dollars") is not None else float(m["yes_price"]) / 100.0
+            qty = float(m["count_fp"]) if m.get("count_fp") is not None else float(m["count"])
+            ts = float(m["ts_ms"]) / 1000.0 if m.get("ts_ms") else self.index.exchange_time()
+        except (KeyError, TypeError, ValueError):
+            return
+        if not self.tape.received:
+            self.log("Public trade feed is live (first trade received)")
+        self.tape.add(tk, ts, px, qty, side == "yes")
+
+    def _on_feed_trades(self, ticker: str, trades: list[dict]) -> None:
+        """Paper mode: trades polled from the public production tape."""
+        for t in trades:
+            self.tape.add(ticker, t["ts"], t["yes_price"], t["count"], t["taker_yes"])
+
+    def _tape_ok(self) -> bool:
+        """The "market moved first" checks need the public trade stream. With
+        the checks switched on and no confirmed trade subscription the bot
+        does not buy: trading without them would be trading blind."""
+        sp = self.s.strategy
+        if sp.fall_guard <= 0 and sp.sell_guard_x <= 0:
+            return True
+        if self.env == "paper":
+            return self.feed is not None
+        return self.ws is not None and self.ws.subscribed("trades")
 
     async def _on_ws_reconnect(self) -> None:
         for b in self.books.values():
@@ -474,7 +515,13 @@ class Engine:
                 self.books.setdefault(tk, OrderBook(tk))
             await self.ws.unsubscribe("book")
             await self.ws.subscribe("book", ["orderbook_delta"], market_tickers=list(tickers), use_yes_price=True)
+            await self.ws.unsubscribe("trades")
+            await self.ws.subscribe("trades", ["trade"], market_tickers=list(tickers))
             self._snap_requested.clear()
+        elif self.ws is not None:
+            await self.ws.unsubscribe("trades")
+        self.tape.keep_only(tickers)
+        self._wait_logged.intersection_update(tickers)
         now = time.time()
         for tk in [tk for tk, ts in self._close_of.items() if ts < now - 7200]:
             self._close_of.pop(tk, None)
@@ -587,11 +634,7 @@ class Engine:
     def _sigma(self, a: AssetState, seconds_left: float) -> float:
         """Volatility handed to the model: the live estimate (floored), times
         the safety factor, times extra caution early in the averaging window."""
-        sp = self.s.strategy
-        sig = max(a.vol.sigma, sp.vol_floor_rel * (a.index.last_value or 0.0)) * sp.sigma_scale
-        if sp.sigma_time_k > 0:
-            sig *= 1.0 + sp.sigma_time_k * max(0.0, (seconds_left - 30.0) / 30.0)
-        return sig
+        return model_sigma(a.vol.sigma, a.index.last_value or 0.0, seconds_left, self.s.strategy)
 
     async def _decide_contract(self, a: AssetState, c: Contract, now: float, last_print_sec: int):
         """Price one contract on its settlement index. Returns (decision info,
@@ -602,6 +645,9 @@ class Engine:
             self._snap_requested.add(c.ticker)
             await self.ws.update("book", "get_snapshot", market_tickers=[c.ticker])
         book = self.books.get(c.ticker)
+        if book is not None and book.valid and c.close_ts - now <= 75:
+            # remembered for the price-fall check: what this side was bid at a moment ago
+            self.tape.quote(c.ticker, now, book.best_bid, book.best_ask)
         first, last = window_bounds(c.close_ts)
         x_print = a.index.prints[last_print_sec]
         obs_end = min(last_print_sec, last)
@@ -620,11 +666,25 @@ class Engine:
         st = TickState(now=now, contract=c, seconds_left=c.close_ts - now, x=x_now, x_print=x_print,
                        strike=thr, sigma=sigma, past_sum=psum, past_n=pn, p_model=p_model,
                        book=book, yes_qty=yes_q, no_qty=no_q,
-                       working=self.om.working(c.ticker), balance=self.free_cash())
+                       working=self.om.working(c.ticker), balance=self.free_cash(), tape=self.tape)
         intents = self.strategy.decide(st)
         note = self.strategy.note
+        held = self.strategy.waited.get(c.ticker)
+        if held is not None and held[0] == now and c.ticker not in self._wait_logged:
+            self._wait_logged.add(c.ticker)          # once per market: the log shows when a check kept the bot out
+            self.log(f"WAIT {c.ticker}: {held[1]}")
+        if intents and not self._tape_ok():
+            # the checks that guard against buying into a move cannot run without the trade stream
+            intents = [i for i in intents if i.kind != "buy"]
+            note = "waiting for the public trade feed (needed for the price-fall and selling checks)"
+            self.strategy.note = note
+            self.strategy.not_sent(c.ticker)
+            if not self._tape_warned:
+                self._tape_warned = True
+                self.log("No confirmed public trade feed yet - not buying until it is there", "warn")
         if not data_ok and intents:
             intents = [i for i in intents if i.kind != "buy"]
+            self.strategy.not_sent(c.ticker)
             note = ("waiting for the published strike" if c.strike_source != "api"
                     else f"feed missed {gaps} window print(s) - not trading this market" if gaps
                     else "volatility estimate still warming up")
@@ -802,6 +862,9 @@ class Engine:
                       "age": time.time() - a.index.last_rx if a.index.last_rx else None,
                       "sigma": a.vol.sigma, "sigma_bp": (1e4 * a.vol.sigma / x) if x else None,
                       "vol_ready": a.vol.ready},
+            "tape": {"ok": self._tape_ok(), "trades": self.tape.received,
+                     "age": time.time() - self.tape.last_rx if self.tape.last_rx else None,
+                     "last_10s": self.tape.volume(c.ticker, a.index.exchange_time(), 10.0) if c else 0.0},
             "market": None if c is None else {
                 "ticker": c.ticker, "open_ts": c.open_ts, "close_ts": c.close_ts, "strike": c.strike,
                 "seconds_left": c.close_ts - a.index.exchange_time(),
@@ -837,7 +900,7 @@ class Engine:
             "killed": self.risk.killed, "kill_reason": self.risk.kill_reason,
             "trading_enabled": self.s.strategy.enabled,
             # the first coin, in the shape the single-coin dashboard used
-            "index": main["index"], "market": main["market"], "decision": main["decision"],
+            "index": main["index"], "tape": main["tape"], "market": main["market"], "decision": main["decision"],
             "hourly": main["hourly"], "hourly_next_close": main["hourly_next_close"],
             "position": main["position"], "exposure": main["exposure"], "history": main["history"],
             "assets": per_asset,

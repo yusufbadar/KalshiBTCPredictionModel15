@@ -232,6 +232,9 @@ def test_live_cash_is_reduced_by_fills_before_the_next_balance_poll(tmp_path, mo
 
         async def update(self, *a, **k):
             pass
+
+        def subscribed(self, name):
+            return True
     WS.connected.set()
     e.ws = WS()
     e._apply_balance({"balance": 6000, "balance_breakdown": [{"exchange_index": 2, "balance": "60.00"}]},
