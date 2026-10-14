@@ -40,7 +40,10 @@ def main() -> None:
                     n += 1
         for f in INCLUDE_FILES:
             if (ROOT / f).exists():
-                z.write(ROOT / f, f)
+                info = zipfile.ZipInfo(f, date_time=time.localtime((ROOT / f).stat().st_mtime)[:6])
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16                 # as packed on Windows these unpack writable by anyone
+                z.writestr(info, (ROOT / f).read_bytes())
                 n += 1
     print(f"wrote {OUT}  ({n} files, {OUT.stat().st_size / 1024:.0f} KB)")
     print("upload it with:  scp lockin-server.zip root@YOUR_SERVER:/root/")
