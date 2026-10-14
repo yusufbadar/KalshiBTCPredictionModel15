@@ -44,10 +44,12 @@ def _last_before(tt: np.ndarray, vals: np.ndarray, grid: np.ndarray):
 
 
 def _next_after(tt: np.ndarray, vals: np.ndarray, qty: np.ndarray, grid: np.ndarray, wait: float):
-    j = np.searchsorted(tt, grid, side="right")
-    ok = j < len(tt)
     v = np.full(len(grid), np.nan)
     q = np.full(len(grid), np.nan)
+    if len(tt) == 0:                    # nobody traded on this side at all
+        return v, q
+    j = np.searchsorted(tt, grid, side="right")
+    ok = j < len(tt)
     jj = np.where(ok, j, 0)
     ok &= tt[jj] <= grid + wait
     v[ok] = vals[jj[ok]]
