@@ -3,9 +3,10 @@
     python docs/make_figures.py
 
 Reads the reports written by ``python -m kalshi_bot.research.report``
-(storage/reports/backtest*.json) and writes black-and-white SVGs to docs/img/.
-Plain Python - no plotting library. The live-day numbers are the ones recorded
-in RESEARCH.md section 7.
+(storage/reports/backtest*.json) and by ``python -m kalshi_bot.research.tape_replay
+--per-market 0.10 --per-close 0.15`` (storage/reports/tape_replay.json) and
+writes black-and-white SVGs to docs/img/. Plain Python - no plotting library.
+The live numbers are the ones recorded in RESEARCH.md sections 7 and 8.
 """
 from __future__ import annotations
 
@@ -30,6 +31,17 @@ W = 1200
 # first live day (RESEARCH.md section 7)
 LIVE = {"trades": 24, "wins": 21, "losses": 3, "net": -10.06, "avg_win": 0.57, "avg_loss": -7.36,
         "dd_before": 27.70, "dd_after": 14.40, "replay_days": 79}
+
+# 13 Oct 2026, 1:44 PM ET, market KXBTC15M-26OCT131345-45 (RESEARCH.md section 8), around the bot's losing buy.
+# From the public trade tape and Kalshi's published one-second index.
+# MOVED: (seconds from the order, lowest and highest price YES traded at on Kalshi in that quarter second)
+MOVED = ((-3.00, .97, .98), (-2.75, .97, .97), (-2.50, .97, .97), (-2.25, .97, .98), (-2.00, .98, .98),
+         (-1.75, .98, .98), (-1.50, .98, .99), (-1.25, .98, .99), (-1.00, .98, .99), (-0.75, .98, .99),
+         (-0.50, .98, .99), (-0.25, .53, .99), (0.00, .53, .81), (0.25, .56, .61), (0.50, .58, .62),
+         (0.75, .57, .62), (1.00, .53, .58), (1.25, .51, .54), (1.50, .48, .52), (1.75, .48, .51), (2.00, .46, .49))
+# MOVED_INDEX: (seconds from the order at which a new index value was stamped, Bitcoin against the line in dollars)
+MOVED_INDEX = ((-3.00, 11.15), (-2.06, 11.45), (-1.06, 12.25), (-0.06, 8.91), (0.94, -14.36), (1.94, -13.86))
+MOVED_BUY = {"price": 0.81, "model": 95.7, "sold": 27_703}
 
 
 class Svg:
@@ -298,17 +310,20 @@ def funnel() -> None:
     s.save("certainty.svg")
 
 
-# --------------------------------------------------------------------------- the five checks
+# --------------------------------------------------------------------------- the six checks
 def checks() -> None:
-    s = frame(650, "Five checks before every order: final 55 seconds, model at least 90 percent sure, price safely "
-                   "clear of the line, still at least one cent cheaper than fair value after fees, inside the risk limits.",
-              "The rule", "Five questions before any order",
+    s = frame(728, "Six checks before every order: final 55 seconds, model at least 90 percent sure, price safely "
+                   "clear of the line, still at least one cent cheaper than fair value after fees, the market has not "
+                   "just moved against it, inside the risk limits.",
+              "The rule", "Six questions before any order",
               "It buys only when every answer is yes. Most markets end without a trade.")
     rows = (
         ("clock", "Is it the final minute?", "Only the last 55 seconds count. Earlier is guessing.", "55 s or less left"),
         ("target", "Is one side a strong favourite?", "The model must rate it at least 90% likely to win.", "model ≥ 90%"),
         ("gap", "Is the price safely clear of the line?", "Far enough that a normal wobble will not flip it.", "≥ 1.5 σ, ≥ $17 early"),
         ("tag", "Is it still on sale?", "At least 1¢ cheaper than it is worth, after Kalshi's fee.", "edge ≥ 1¢"),
+        ("pulse", "Is the market calm right now?", "If its price just dropped or sellers just rushed in, it waits a second.",
+         "no sudden drop"),
         ("shield", "Is the bet small enough?", "Inside every risk limit, with fresh prices on screen.", "≤ 6% of account"),
     )
     y0, rh = 176, 78
@@ -332,17 +347,19 @@ def checks() -> None:
         elif icon == "tag":
             s.path(f"M{cx - 15},{cy - 11} H{cx + 2} L{cx + 15},{cy} L{cx + 2},{cy + 11} H{cx - 15} Z", sw=2.2)
             s.circle(cx - 8, cy, 2.6, fill=HI)
+        elif icon == "pulse":
+            s.path(f"M{cx - 17},{cy} H{cx - 8} L{cx - 3},{cy - 13} L{cx + 4},{cy + 13} L{cx + 8},{cy} H{cx + 17}", sw=2.2)
         else:
             s.path(f"M{cx},{cy - 16} L{cx + 13},{cy - 11} V{cy - 2} C{cx + 13},{cy + 7} {cx + 7},{cy + 12} {cx},{cy + 16} "
                    f"C{cx - 7},{cy + 12} {cx - 13},{cy + 7} {cx - 13},{cy - 2} V{cy - 11} Z", sw=2.2)
         s.text(172, y + 29, title, size=22, weight=700, fill=HI)
         s.text(172, y + 53, desc, size=18, fill=MUTED)
         pill(s, 1130, y + 15, rule, size=16, anchor="end")
-    fy = y0 + 5 * rh + 4
+    fy = y0 + len(rows) * rh + 4
     s.rect(48, fy, 1104, 50, fill=HI, rx=14)
-    s.text(W / 2, fy + 32, "Five yes answers → buy at once, hold under a minute, collect $1 per contract if right.",
+    s.text(W / 2, fy + 32, "Six yes answers → buy at once, hold under a minute, collect $1 per contract if right.",
            size=20, weight=700, fill="#000", anchor="middle")
-    s.save("five-checks.svg")
+    s.save("checks.svg")
 
 
 # --------------------------------------------------------------------------- backtest
@@ -497,6 +514,92 @@ def liveday() -> None:
     s.save("first-live-day.svg")
 
 
+# --------------------------------------------------------------------------- the market moved first
+def moved_first() -> None:
+    buy = MOVED_BUY
+    s = frame(700, "A real losing trade on 13 October 2026. On Kalshi the price of YES fell from 98 cents to as low "
+                   "as 53 cents while the bot's Bitcoin price still showed 9 to 12 dollars above the line. The bot "
+                   f"bought at {100 * buy['price']:.0f} cents. Just under a second later its price feed showed "
+                   "Bitcoin 14 dollars below the line.",
+              "13 Oct 2026 · 1:44 PM ET · real money", "The market knew a second before the bot did",
+              "One losing trade, quarter second by quarter second. Kalshi's traders moved first; the price feed followed.")
+    x0, x1 = 150, 1128
+    t0, t1 = MOVED[0][0], MOVED[-1][0] + 0.25
+    X = lambda t: x0 + (t - t0) / (t1 - t0) * (x1 - x0)  # noqa: E731
+    cw = (x1 - x0) / len(MOVED)
+    # --- what Kalshi's traders paid
+    ya, yb, lo, hi = 204, 386, 0.40, 1.00
+    Y = lambda p: yb - (p - lo) / (hi - lo) * (yb - ya)  # noqa: E731
+    s.text(48, ya - 22, "PRICE OF YES ON KALSHI", size=14.5, fill=MUTED, weight=700, ls=2.0)
+    for p in (1.0, 0.8, 0.6, 0.4):
+        s.line(x0, Y(p), x1, Y(p), stroke=LINE)
+        s.text(x0 - 14, Y(p) + 6, f"{100 * p:.0f}¢", size=16, fill=MUTED, anchor="end", mono=True)
+    for t, plo, phi in MOVED:
+        top, bot = Y(phi), Y(plo)
+        s.rect(X(t) + 7, top - 3, cw - 14, max(bot - top, 0) + 6, fill=HI, rx=3)
+    # --- what the bot's price feed said
+    yc, yd, ilo, ihi = 478, 584, -20.0, 16.0
+    YI = lambda v: yd - (v - ilo) / (ihi - ilo) * (yd - yc)  # noqa: E731
+    s.text(48, yc - 26, "BITCOIN AGAINST THE LINE, AS THE BOT'S PRICE FEED SHOWED IT", size=14.5, fill=MUTED, weight=700, ls=2.0)
+    s.line(x0, YI(0), x1, YI(0), stroke=MUTED, dash="5 6")
+    s.text(x0 - 14, YI(0) + 6, "the line", size=16, fill=MUTED, anchor="end")
+    d = ""
+    for i, (t, v) in enumerate(MOVED_INDEX):
+        end = MOVED_INDEX[i + 1][0] if i + 1 < len(MOVED_INDEX) else t1
+        d += f"{'M' if i == 0 else 'L'}{X(t):.1f},{YI(v):.1f} L{X(end):.1f},{YI(v):.1f} "
+    s.path(d, sw=3)
+    s.text(X(-2.95), YI(11.2) - 13, "$11 to $12 above: YES looks safe", size=17, fill=TEXT)
+    s.text(X(2.25), YI(-14.4) - 14, "$14 below", size=17, fill=TEXT, anchor="end")
+    # --- the three moments
+    xm, xo, xf = X(-0.25), X(0.0), X(MOVED_INDEX[4][0])
+    for x, dash in ((xm, "3 5"), (xo, None), (xf, "3 5")):
+        s.line(x, ya - 2, x, yd + 6, stroke=HI if dash is None else MUTED, sw=2 if dash is None else 1.5, dash=dash)
+    s.circle(xo, Y(buy["price"]), 8, fill=BG, stroke=HI, sw=3)
+    s.text(xm - 12, Y(0.50), f"{buy['sold']:,} contracts", size=16.5, fill=HI, weight=700, anchor="end")
+    s.text(xm - 12, Y(0.50) + 21, "sold in a quarter second", size=16.5, fill=MUTED, anchor="end")
+    s.text(xo + 62, Y(0.90), f"the bot buys YES at {100 * buy['price']:.0f}¢", size=17, fill=HI, weight=700)
+    s.text(xo + 62, Y(0.90) + 22, f"its model still says {buy['model']:.0f}% sure", size=16.5, fill=MUTED)
+    by = yb + 30
+    s.path(f"M{xm:.1f},{by - 7} V{by} H{xf:.1f} V{by - 7}", stroke=HI, sw=2)
+    s.text((xm + xf) / 2, by + 24, "about one second", size=17, fill=HI, weight=700, anchor="middle", mono=True)
+    s.text(xf + 12, yc + 6, "the price feed catches up", size=16.5, fill=MUTED)
+    fy = 626
+    s.rect(48, fy, 1104, 50, fill=HI, rx=14)
+    s.text(W / 2, fy + 32, "Now it waits: after a drop of more than 10¢ or a rush of selling, it looks again a second later.",
+           size=20, weight=700, fill="#000", anchor="middle")
+    s.save("moved-first.svg")
+
+
+def two_checks(rep: dict) -> dict:
+    v = rep["variants"]
+    off, on = v["without the checks"], v["shipped rule (both checks)"]
+    kept = 100 * on["trades"] / off["trades"]
+    s = frame(470, f"The live code replayed trade by trade over {off['days']} days. Without the two checks: "
+                   f"{off['trades']:,} trades, {off['lost_pct']:.1f} percent lost, profit {off['pnl']:.0f} dollars, worst dip "
+                   f"{off['dip']:.0f} dollars. With them: {on['trades']:,} trades, {on['lost_pct']:.1f} percent lost, profit "
+                   f"{on['pnl']:.0f} dollars, worst dip {on['dip']:.0f} dollars.",
+              "What waiting is worth", f"Fewer bad buys, {kept:.0f}% of the trades kept",
+              f"The live code replayed trade by trade over {off['days']} days of real markets. "
+              f"${rep['equity']:.0f} account, at most {100 * rep['per_market']:.0f}% per trade.")
+    cols = (("TRADES", 470), ("LOST", 620), ("PROFIT", 800), ("WORST DIP", 975), ("WORST DAY", 1128))
+    for head, x in cols:
+        s.text(x, 196, head, size=14.5, fill=MUTED, weight=700, anchor="end", mono=True, ls=1.6)
+    for i, (name, r, solid) in enumerate((("Without the two checks", off, False), ("With the two checks", on, True))):
+        y = 214 + i * 92
+        s.rect(48, y, 1104, 78, fill=HI if solid else PANEL, stroke=None if solid else LINE, rx=14)
+        ink = "#000" if solid else HI
+        s.text(72, y + 47, name, size=22, weight=700, fill=ink)
+        vals = (f"{r['trades']:,}", f"{r['lost_pct']:.1f}%", money(r["pnl"]), f"${r['dip']:.0f}", money(r["worst_day"]))
+        for (_, x), val in zip(cols, vals):
+            s.text(x, y + 49, val, size=27, weight=700, fill=ink, anchor="end", mono=True)
+    s.text(48, 432, f"Losing days: {off['red_days']} of {off['days']} without, {on['red_days']} of {on['days']} with. "
+                    "A replay is not a promise: live trading is the real test.", size=19, fill=MUTED)
+    s.save("two-checks.svg")
+    return {"days": off["days"], "markets": rep["markets"], "kept_pct": kept,
+            "without": {k: off[k] for k in ("trades", "per_day", "lost", "lost_pct", "pnl", "dip", "worst_day", "red_days")},
+            "with": {k: on[k] for k in ("trades", "per_day", "lost", "lost_pct", "pnl", "dip", "worst_day", "red_days")}}
+
+
 # --------------------------------------------------------------------------- limits
 def risk() -> None:
     s = frame(520, "Built-in limits for a 100 dollar account: at most 6 dollars in one contract, 10 dollars on one "
@@ -616,15 +719,15 @@ def stress(b: dict) -> None:
 
 # --------------------------------------------------------------------------- how it is built
 def architecture() -> None:
-    s = frame(480, "How the bot is built: prices come in from Kalshi, a model works out the odds, five checks decide "
+    s = frame(480, "How the bot is built: prices come in from Kalshi, a model works out the odds, six checks decide "
                    "whether to buy, risk limits size the order, and the order goes back to Kalshi. Every step is "
                    "recorded in a trade log and shown on the dashboard.",
               "Under the hood", "From a price to an order",
               "The same rule runs in the research replay and in the live bot, and a test fails if they disagree.")
     s.rect(48, 172, 1104, 46, stroke=HI, sw=2, rx=12)
     s.text(W / 2, 202, "KALSHI EXCHANGE", size=16, weight=700, fill=HI, anchor="middle", mono=True, ls=3)
-    steps = (("PRICE FEED", "one Bitcoin price", "every second"), ("MODEL", "the odds that", "each side wins"),
-             ("FIVE CHECKS", "buy only if", "all five pass"), ("RISK LIMITS", "size the order", "to the account"),
+    steps = (("PRICE FEED", "Bitcoin's price,", "every Kalshi trade"), ("MODEL", "the odds that", "each side wins"),
+             ("SIX CHECKS", "buy only if", "all six pass"), ("RISK LIMITS", "size the order", "to the account"),
              ("ORDER", "buy now", "or cancel"))
     gap, y, hgt = 28, 268, 96
     bw = (1104 - 4 * gap) / 5
@@ -661,25 +764,27 @@ def architecture() -> None:
 def story() -> None:
     s = frame(400, "Timeline: March 2026 candle-pattern bot scrapped; 27 September lock-in rules frozen; "
                    "28 September to 10 October tested on unseen data; 10 October live with 100 dollars; "
-                   "11 October first live day lost 10 dollars and the rules were tightened.",
-              "The story so far", "Built, tested, shipped, corrected")
+                   "11 October first live day lost 10 dollars and the rules were tightened; 13 October two more "
+                   "losses traced to the market moving before the price feed, and the bot now waits when that happens.",
+              "The story so far", "Built, tested, shipped, corrected twice")
     nodes = (("MAR 2026", "Candle-pattern bot", ("replayed on real fills:", "it loses. Scrapped.")),
              ("27 SEP", "Lock-in rules, v1", ("written down", "and frozen")),
              ("28 SEP TO 10 OCT", "Unseen-data test", ("two fresh weeks,", "still profitable")),
              ("10 OCT", "Live with $100", ("v2, on a small", "cloud server")),
-             ("11 OCT", "First day: −$10", ("three early buys lost,", "v3 waits longer")))
-    x0, x1, y = 140, 1060, 216
+             ("11 OCT", "First day: −$10", ("three early buys lost,", "v3 waits longer")),
+             ("13 OCT", "Market moved first", ("bought on stale news,", "v4 waits a second")))
+    x0, x1, y = 124, 1076, 216
     s.line(x0, y, x1, y, stroke=LINE2, sw=3)
     for i, (when, head, lines) in enumerate(nodes):
-        x = x0 + i * (x1 - x0) / 4
+        x = x0 + i * (x1 - x0) / (len(nodes) - 1)
         last = i == len(nodes) - 1
         s.circle(x, y, 11, fill=HI if not last else BG, stroke=HI, sw=3)
         if last:
             s.circle(x, y, 4.5, fill=HI)
-        s.text(x, y - 34, when, size=15.5, fill=MUTED, weight=700, anchor="middle", mono=True, ls=1.2)
-        s.text(x, y + 50, head, size=20, fill=HI, weight=700, anchor="middle")
+        s.text(x, y - 34, when, size=14, fill=MUTED, weight=700, anchor="middle", mono=True, ls=1.0)
+        s.text(x, y + 50, head, size=18.5, fill=HI, weight=700, anchor="middle")
         for j, ln in enumerate(lines):
-            s.text(x, y + 80 + j * 24, ln, size=17, fill=MUTED, anchor="middle")
+            s.text(x, y + 78 + j * 23, ln, size=15.5, fill=MUTED, anchor="middle")
     s.save("story.svg")
 
 
@@ -698,6 +803,11 @@ def main() -> None:
     checks()
     facts = {"backtest": backtest(b, hr), "payoff": payoff(b)}
     liveday()
+    moved_first()
+    if (REPORTS / "tape_replay.json").exists():
+        facts["two_checks"] = two_checks(load("tape_replay.json"))
+    else:
+        print("  (two-checks.svg skipped: run  python -m kalshi_bot.research.tape_replay --per-market 0.10 --per-close 0.15)")
     risk()
     server()
     calibration(b)
